@@ -1,0 +1,205 @@
+---
+title: "IdP Metadata"
+description: "Load identity provider configuration from SAML metadata XML."
+---
+
+## What is IdP metadata?
+
+IdP metadata is a standardized XML document published by the Identity Provider that describes its SAML capabilities: SSO and SLO endpoint URLs, supported bindings, supported NameID formats, X.509 certificates, and attribute names. Consuming it instead of manually configuring each setting reduces errors and keeps your SP in sync when the IdP rotates certificates or changes endpoint URLs.
+
+---
+
+## Loading metadata from a URL
+
+`IdpMetadataParser#parse_remote` fetches the metadata XML over HTTP/HTTPS and returns a populated `OneLogin::RubySaml::Settings` object:
+
+```ruby
+def saml_settings
+  idp_metadata_parser = OneLogin::RubySaml::IdpMetadataParser.new
+
+  # Returns OneLogin::RubySaml::Settings pre-populated with IdP metadata
+  settings = idp_metadata_parser.parse_remote(
+    "https://example.com/auth/saml2/idp/metadata"
+  )
+
+  # Override or add SP-specific settings
+  settings.assertion_consumer_service_url = "http://#{request.host}/saml/consume"
+  settings.sp_entity_id                   = "http://#{request.host}/saml/metadata"
+  settings.name_identifier_format         = "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"
+
+  settings
+end
+```
+
+The second argument (`validate_cert`, default `true`) controls whether the TLS certificate of the HTTPS endpoint is verified. Set it to `false` only in development/test environments.
+
+<Warning>
+  Ruby SAML does not validate that the metadata URL you supply is correct or trusted. You, the developer, are responsible for ensuring the URL points to your intended IdP's metadata endpoint and is fetched over a trusted connection.
+</Warning>
+
+---
+
+## Loading metadata from an XML string
+
+Use `IdpMetadataParser#parse` when you already have the metadata XML in memory (for example, loaded from a file or a database):
+
+```ruby
+xml = File.read("idp_metadata.xml")
+
+idp_metadata_parser = OneLogin::RubySaml::IdpMetadataParser.new
+settings = idp_metadata_parser.parse(xml)
+
+settings.assertion_consumer_service_url = "http://#{request.host}/saml/consume"
+settings.sp_entity_id                   = "http://#{request.host}/saml/metadata"
+```
+
+---
+
+## Settings populated automatically
+
+After a successful parse, the following fields on the `Settings` object are populated from the metadata:
+
+| Setting | Source element |
+|---|---|
+| `idp_entity_id` | `<EntityDescriptor entityID="...">` |
+| `idp_sso_service_url` | `<SingleSignOnService Location="...">` |
+| `idp_slo_service_url` | `<SingleLogoutService Location="...">` |
+| `idp_cert` | `<KeyDescriptor>` (single signing cert) |
+| `idp_cert_fingerprint` | Computed from `idp_cert` |
+| `idp_cert_multi` | All signing / encryption certs when multiple are present |
+| `name_identifier_format` | `<NameIDFormat>` |
+| `idp_attribute_names` | `<saml:Attribute Name="...">` |
+
+<Note>
+  When the metadata contains multiple certificates, `idp_cert_multi` is populated with `:signing` and `:encryption` arrays. The single `idp_cert` and `idp_cert_fingerprint` fields are only set when there is exactly one unique certificate covering both uses.
+</Note>
+
+---
+
+## Selecting a specific entity
+
+If the metadata document contains multiple `<EntityDescriptor>` elements, specify the one you want by its `entity_id`:
+
+```ruby
+validate_cert = true
+settings = idp_metadata_parser.parse_remote(
+  "https://example.com/auth/saml2/idp/metadata",
+  validate_cert,
+  entity_id: "http://example.com/target/entity"
+)
+```
+
+---
+
+## Filtering by binding and NameID format
+
+When an `IDPSSODescriptor` advertises multiple bindings or NameID formats, you can specify which ones to use. The parser selects the first match from your ordered preference list:
+
+```ruby
+validate_cert = true
+options = {
+  entity_id:   "http://example.com/target/entity",
+  name_id_format: "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress",
+  sso_binding: "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST",
+  slo_binding: "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"
+}
+
+settings = idp_metadata_parser.parse_remote(
+  "https://example.com/auth/saml2/idp/metadata",
+  validate_cert,
+  options
+)
+```
+
+You can also pass an array for priority ordering:
+
+```ruby
+options = {
+  sso_binding: [
+    "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST",
+    "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"
+  ]
+}
+```
+
+The first binding present in both the list and the metadata will be selected.
+
+---
+
+## Getting a Hash instead of a Settings object
+
+`parse_to_hash` and `parse_remote_to_hash` return a plain `Hash` instead of a `Settings` object. This is useful when integrating with libraries like [omniauth-saml](https://github.com/omniauth/omniauth-saml) that accept a hash of configuration options:
+
+```ruby
+idp_metadata_parser = OneLogin::RubySaml::IdpMetadataParser.new
+
+# From a URL
+hash = idp_metadata_parser.parse_remote_to_hash(
+  "https://example.com/auth/saml2/idp/metadata"
+)
+
+# From an XML string
+hash = idp_metadata_parser.parse_to_hash(xml)
+```
+
+The returned hash uses symbol keys matching the `Settings` attribute names (`:idp_entity_id`, `:idp_sso_service_url`, etc.).
+
+---
+
+## Validating the metadata signature manually
+
+The `IdpMetadataParser` does not verify the XML signature on the metadata document. If your IdP signs its metadata, you can validate the signature before parsing:
+
+```ruby
+require "xml_security"
+require "onelogin/ruby-saml/utils"
+require "onelogin/ruby-saml/idp_metadata_parser"
+
+url = "https://example.com/auth/saml2/idp/metadata"
+idp_metadata_parser = OneLogin::RubySaml::IdpMetadataParser.new
+
+uri = URI.parse(url)
+raise ArgumentError.new("url must begin with http or https") unless /^https?/ =~ uri.scheme
+
+http = Net::HTTP.new(uri.host, uri.port)
+if uri.scheme == "https"
+  http.use_ssl = true
+  http.verify_mode = OpenSSL::SSL::VERIFY_PEER
+end
+
+get = Net::HTTP::Get.new(uri.request_uri)
+get.basic_auth uri.user, uri.password if uri.user
+response = http.request(get)
+xml = response.body
+
+errors = []
+doc = XMLSecurity::SignedDocument.new(xml, errors)
+
+cert_str = "<your_metadata_signing_cert_here>"
+cert = OneLogin::RubySaml::Utils.format_cert(cert_str)
+metadata_sign_cert = OpenSSL::X509::Certificate.new(cert)
+
+valid = doc.validate_document_with_cert(metadata_sign_cert, true)
+if valid
+  settings = idp_metadata_parser.parse(
+    xml,
+    entity_id: "http://example.com/target/entity"
+  )
+else
+  raise "Metadata signature failed to validate with the provided certificate"
+end
+```
+
+<AccordionGroup>
+  <Accordion title="Steps explained">
+    1. Fetch the raw XML over HTTPS with peer certificate verification enabled.
+    2. Wrap it in `XMLSecurity::SignedDocument`.
+    3. Build an `OpenSSL::X509::Certificate` from the known, trusted metadata signing certificate.
+    4. Call `validate_document_with_cert` — returns `true` if the XML signature is valid.
+    5. Only call `idp_metadata_parser.parse` when the signature is confirmed valid.
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+  This approach requires you to already have the IdP's metadata signing certificate stored out-of-band. Obtaining it from the same URL you are about to validate provides no security guarantee.
+</Note>

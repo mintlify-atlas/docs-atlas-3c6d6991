@@ -1,0 +1,260 @@
+---
+title: "Authentication Flow"
+description: "Understand the SP-initiated SAML 2.0 SSO flow and implement it end to end."
+---
+
+## How SP-initiated SSO works
+
+In the SP-initiated flow, authentication begins at the service provider. The SP builds an `AuthnRequest`, redirects the user to the IdP, and then receives and validates the `SAMLResponse` posted back to the SP's assertion consumer service (ACS) URL.
+
+<Steps>
+  <Step title="User accesses the SP">
+    A user tries to access a protected resource on your application. You detect they are not authenticated and begin the SSO flow.
+  </Step>
+  <Step title="SP builds the AuthnRequest">
+    Your application instantiates `OneLogin::RubySaml::Authrequest`, which is assigned a unique UUID as its `ID`. You call `#create` with your settings to obtain the fully-formed redirect URL.
+  </Step>
+  <Step title="SP redirects to the IdP">
+    The user's browser is redirected to the IdP SSO endpoint with the `SAMLRequest` query parameter. For HTTP-POST binding, the request is embedded in a form and auto-submitted.
+  </Step>
+  <Step title="IdP authenticates the user">
+    The IdP validates the request, authenticates the user (via login form, SSO session, etc.), and builds a signed `SAMLResponse`.
+  </Step>
+  <Step title="IdP posts the SAMLResponse to the ACS URL">
+    The IdP redirects the browser to your `assertion_consumer_service_url` with the base64-encoded `SAMLResponse` as a POST parameter.
+  </Step>
+  <Step title="SP validates the SAMLResponse">
+    Your application constructs a `OneLogin::RubySaml::Response` object, calls `#is_valid?`, and on success establishes the user session using `response.nameid` and `response.attributes`.
+  </Step>
+</Steps>
+
+---
+
+## Building and sending an AuthnRequest
+
+```ruby
+def init
+  request = OneLogin::RubySaml::Authrequest.new
+  redirect_to(request.create(saml_settings))
+end
+```
+
+`Authrequest#create` appends a `SAMLRequest` query parameter to `settings.idp_sso_service_url` and returns the complete URL. For HTTP-Redirect binding, the request XML is deflated and base64-encoded. For HTTP-POST binding, it is only base64-encoded, and a digital signature is embedded inside the XML document itself when `authn_requests_signed` is enabled.
+
+<Note>
+  Store `request.uuid` in the session before redirecting. You will need it later to validate `InResponseTo` in the response.
+</Note>
+
+### Requesting a specific subject
+
+If the SP already knows which user should authenticate (for example, a login hint from a previous session), set `name_identifier_value_requested` and `name_identifier_format` before building the request:
+
+```ruby
+def init
+  request = OneLogin::RubySaml::Authrequest.new
+  saml_settings.name_identifier_value_requested = "testuser@example.com"
+  saml_settings.name_identifier_format = "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"
+  redirect_to(request.create(saml_settings))
+end
+```
+
+When `name_identifier_value_requested` is set, the library adds a `<saml:Subject>` element with a `<saml:NameID>` and a `<saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer">` to the `AuthnRequest` XML.
+
+---
+
+## Receiving and validating the SAMLResponse
+
+```ruby
+def consume
+  response = OneLogin::RubySaml::Response.new(params[:SAMLResponse], settings: saml_settings)
+
+  if response.is_valid?
+    session[:userid]     = response.nameid
+    session[:attributes] = response.attributes
+  else
+    authorize_failure
+    # Inspect response.errors for the list of failures
+  end
+end
+```
+
+<Warning>
+  If the SAMLResponse contains an `EncryptedAssertion`, you must pass `:settings` in the constructor. The SP private key is required to decrypt the assertion. If you are unsure whether a response will be encrypted, always pass `:settings` on initialization.
+</Warning>
+
+You can also set settings after construction when the response is not encrypted:
+
+```ruby
+response          = OneLogin::RubySaml::Response.new(params[:SAMLResponse])
+response.settings = saml_settings
+```
+
+### Validation options
+
+By default, `Response#is_valid?` stops at the first failing validation. Pass `true` to collect all errors before returning:
+
+```ruby
+response.is_valid?(true)  # collect_errors = true
+response.errors           # => ["The Assertion must include one Conditions element", ...]
+```
+
+### Skipping individual validations
+
+Some environments or testing scenarios require bypassing specific checks. Each option is passed in the constructor:
+
+```ruby
+# Skip AuthnStatement validation
+response = OneLogin::RubySaml::Response.new(params[:SAMLResponse], skip_authnstatement: true)
+
+# Skip Conditions (NotBefore / NotOnOrAfter)
+response = OneLogin::RubySaml::Response.new(params[:SAMLResponse], skip_conditions: true)
+
+# Skip SubjectConfirmation entirely
+response = OneLogin::RubySaml::Response.new(params[:SAMLResponse], skip_subject_confirmation: true)
+
+# Skip only the Recipient check within SubjectConfirmation
+response = OneLogin::RubySaml::Response.new(params[:SAMLResponse], skip_recipient_check: true)
+
+# Skip audience validation
+response = OneLogin::RubySaml::Response.new(params[:SAMLResponse], skip_audience: true)
+```
+
+<Warning>
+  Disabling validations weakens the security guarantees of SAML. Only skip validations when you have a specific, understood reason.
+</Warning>
+
+---
+
+## Preventing IdP-initiated logins with `matches_request_id`
+
+An IdP-initiated login is one where the IdP sends a `SAMLResponse` that was never preceded by an `AuthnRequest` from the SP. You can reject these by storing the `AuthnRequest` UUID and passing it back when processing the response.
+
+<Steps>
+  <Step title="Store the request UUID">
+    ```ruby
+    def init
+      request = OneLogin::RubySaml::Authrequest.new
+      # request.uuid is the unique ID assigned to this AuthnRequest
+      session[:saml_request_id] = request.uuid
+      redirect_to(request.create(saml_settings))
+    end
+    ```
+  </Step>
+  <Step title="Validate InResponseTo">
+    ```ruby
+    def consume
+      request_id = session.delete(:saml_request_id) # delete to prevent re-use
+
+      # Reject if no prior AuthnRequest was stored
+      raise "IdP-initiated login detected" if request_id.nil?
+
+      response = OneLogin::RubySaml::Response.new(
+        params[:SAMLResponse],
+        settings:           saml_settings,
+        matches_request_id: request_id
+      )
+
+      if response.is_valid?
+        session[:userid] = response.nameid
+      else
+        authorize_failure
+      end
+    end
+    ```
+
+    The library checks that `response.in_response_to` matches `request_id`. If the values differ, validation fails with:
+
+    > "The InResponseTo of the Response: ..., does not match the ID of the AuthNRequest sent by the SP: ..."
+  </Step>
+</Steps>
+
+---
+
+## Handling clock drift
+
+If server clocks are not perfectly synchronized you may see the error `"Current time is earlier than NotBefore condition"`. Use `:allowed_clock_drift` to add a tolerance window (in seconds):
+
+```ruby
+response = OneLogin::RubySaml::Response.new(
+  params[:SAMLResponse],
+  allowed_clock_drift: 1.second
+)
+```
+
+The value is added to the current time during `NotBefore` checks and subtracted during `NotOnOrAfter` checks. Keep the value as small as possible.
+
+<Tip>
+  Prefer solving clock drift by synchronizing both servers with NTP. Use `allowed_clock_drift` only for residual drift after NTP is in place.
+</Tip>
+
+---
+
+## Protecting against large messages (decompression bombs)
+
+SAML messages are decompressed before parsing. To guard against decompression bombs, the library defaults to a maximum of **250,000 bytes** after decompression. Legitimate responses with large group membership claims may exceed this limit.
+
+Override the limit via `message_max_bytesize` in your settings:
+
+```ruby
+def saml_settings
+  OneLogin::RubySaml::Settings.new(message_max_bytesize: 500_000)
+end
+
+def consume
+  response = OneLogin::RubySaml::Response.new(
+    params[:SAMLResponse],
+    settings: saml_settings
+  )
+  # ...
+end
+```
+
+---
+
+## Complete controller example
+
+```ruby
+class SamlController < ApplicationController
+  def init
+    request = OneLogin::RubySaml::Authrequest.new
+    session[:saml_request_id] = request.uuid
+    redirect_to(request.create(saml_settings))
+  end
+
+  def consume
+    request_id = session.delete(:saml_request_id)
+    raise "IdP-initiated login detected" if request_id.nil?
+
+    response = OneLogin::RubySaml::Response.new(
+      params[:SAMLResponse],
+      settings:           saml_settings,
+      matches_request_id: request_id,
+      allowed_clock_drift: 1.second
+    )
+
+    if response.is_valid?
+      session[:userid]     = response.nameid
+      session[:attributes] = response.attributes
+    else
+      authorize_failure
+    end
+  end
+
+  private
+
+  def saml_settings
+    settings = OneLogin::RubySaml::Settings.new
+
+    settings.assertion_consumer_service_url = "http://#{request.host}/saml/consume"
+    settings.sp_entity_id                   = "http://#{request.host}/saml/metadata"
+    settings.idp_entity_id                  = "https://app.onelogin.com/saml/metadata/#{OneLoginAppId}"
+    settings.idp_sso_service_url            = "https://app.onelogin.com/trust/saml2/http-post/sso/#{OneLoginAppId}"
+    settings.idp_sso_service_binding        = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"
+    settings.idp_cert_fingerprint           = OneLoginAppCertFingerPrint
+    settings.idp_cert_fingerprint_algorithm = "http://www.w3.org/2000/09/xmldsig#sha1"
+    settings.name_identifier_format         = "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"
+
+    settings
+  end
+end
+```

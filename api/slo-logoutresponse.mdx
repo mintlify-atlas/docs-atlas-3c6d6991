@@ -1,0 +1,161 @@
+---
+title: "SloLogoutresponse"
+description: "OneLogin::RubySaml::SloLogoutresponse — build SP responses to IdP logout requests."
+---
+
+`OneLogin::RubySaml::SloLogoutresponse` builds the SAML 2.0 `<LogoutResponse>` that the SP sends back to the IdP after processing an IdP-initiated logout request. It inherits from `SamlMessage`.
+
+<Note>
+  This class handles the **SP's reply** to an IdP-initiated logout. To parse the IdP-initiated logout request, see [SloLogoutrequest](/api/slo-logoutrequest). To process the IdP's reply to an SP-initiated logout, see [Logoutresponse](/api/logoutresponse).
+</Note>
+
+## Constructor
+
+```ruby
+SloLogoutresponse.new → SloLogoutresponse
+```
+
+Creates a new logout response object and assigns it a random UUID as its `ID` attribute.
+
+```ruby
+slo_response = OneLogin::RubySaml::SloLogoutresponse.new
+puts slo_response.uuid  # => "_f3e2d1c0-..."
+```
+
+### Attributes
+
+<ResponseField name="uuid" type="String">
+  The unique identifier assigned to this logout response. Also accessible as `#response_id`.
+</ResponseField>
+
+---
+
+## `#create`
+
+```ruby
+create(settings, request_id = nil, logout_message = nil, params = {}, logout_status_code = nil) → String
+```
+
+Builds and returns the full redirect URL for the SP's logout response back to the IdP.
+
+The destination URL is `settings.idp_slo_response_service_url` if set, otherwise `settings.idp_slo_service_url`. Raises `OneLogin::RubySaml::SettingError` if neither is configured.
+
+### Parameters
+
+<ParamField path="settings" type="OneLogin::RubySaml::Settings" required>
+  The toolkit settings object. Must have `idp_slo_service_url` (or `idp_slo_response_service_url`) configured.
+</ParamField>
+
+<ParamField path="request_id" type="String" default="nil">
+  The `ID` of the `<LogoutRequest>` received from the IdP. When provided, it is set as the `InResponseTo` attribute of the response. Use `SloLogoutrequest#id` to obtain this value.
+</ParamField>
+
+<ParamField path="logout_message" type="String" default="'Successfully Signed Out'">
+  The text placed in `<samlp:StatusMessage>`. Defaults to `"Successfully Signed Out"` when `nil`.
+</ParamField>
+
+<ParamField path="params" type="Hash" default="{}">
+  Extra GET parameters to include in the redirect URL.
+
+  <Expandable title="params keys">
+    <ParamField path="params[:RelayState]" type="String">
+      The `RelayState` value received from the IdP in the original logout request. The IdP expects this to be echoed back unchanged. Also accepted as `params['RelayState']`.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField path="logout_status_code" type="String" default="'urn:oasis:names:tc:SAML:2.0:status:Success'">
+  The SAML status code placed in `<samlp:StatusCode Value="...">`. Defaults to `Success` when `nil`.
+</ParamField>
+
+### Returns
+
+<ResponseField name="url" type="String">
+  The complete redirect URL including `SAMLResponse` and any additional parameters, e.g. `https://idp.example.com/slo?SAMLResponse=...&RelayState=...`
+</ResponseField>
+
+---
+
+## `#create_params`
+
+```ruby
+create_params(settings, request_id = nil, logout_message = nil, params = {}, logout_status_code = nil) → Hash
+```
+
+Returns the raw GET parameter hash without building the final redirect URL. Useful when you need direct access to the parameters (e.g., for POST binding or custom routing).
+
+When `settings.security[:logout_responses_signed]` is `true` and the binding is HTTP-Redirect, the hash includes `SigAlg` and `Signature` entries.
+
+### Returns
+
+<ResponseField name="params" type="Hash">
+  Hash containing at minimum `"SAMLResponse"` (base64-encoded, deflated XML). May also include `"RelayState"`, `"SigAlg"`, and `"Signature"` when response signing is enabled.
+</ResponseField>
+
+---
+
+## Full IdP-initiated SLO handler example
+
+The following example shows a complete controller action that parses the IdP's logout request, validates it, and replies with a logout response:
+
+```ruby
+def idp_logout_request
+  settings = Account.get_saml_settings
+
+  # Enable for ADFS compatibility (lowercase percent-encoding in signatures)
+  settings.security[:lowercase_url_encoding] = true
+
+  logout_request = OneLogin::RubySaml::SloLogoutrequest.new(
+    params[:SAMLRequest],
+    settings:   settings,
+    get_params: params
+  )
+
+  unless logout_request.is_valid?
+    logger.error "IdP initiated LogoutRequest was not valid!"
+    return render :inline => logout_request.errors.join(", ")
+  end
+
+  logger.info "IdP initiated logout for #{logout_request.name_id}"
+
+  # Destroy the local session
+  delete_session
+
+  # Build the response and redirect back to the IdP
+  logout_request_id = logout_request.id
+  logout_response   = OneLogin::RubySaml::SloLogoutresponse.new.create(
+    settings,
+    logout_request_id,
+    nil,
+    :RelayState => params[:RelayState]
+  )
+  redirect_to logout_response
+end
+```
+
+<Tip>
+  Pass `logout_request.id` as the `request_id` argument. This sets `InResponseTo` in the `<LogoutResponse>`, which some IdPs require to correlate the response with their original request.
+</Tip>
+
+<Warning>
+  Always echo the `RelayState` received from the IdP back in the response params. Omitting it can cause the IdP to reject the response or fail to redirect the user correctly after logout.
+</Warning>
+
+## Unified logout router
+
+Many applications handle both SP-initiated and IdP-initiated SLO from a single action:
+
+```ruby
+def logout
+  if params[:SAMLRequest]
+    # IdP-initiated: parse the incoming LogoutRequest and reply
+    idp_logout_request
+  elsif params[:SAMLResponse]
+    # SP-initiated: process the IdP's LogoutResponse
+    process_logout_response
+  else
+    # No SAML params: initiate SP-initiated SLO
+    sp_logout_request
+  end
+end
+```

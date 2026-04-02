@@ -1,0 +1,192 @@
+---
+title: "Authrequest"
+description: "OneLogin::RubySaml::Authrequest — build SAML authentication request URLs."
+---
+
+`OneLogin::RubySaml::Authrequest` builds and signs SP-initiated `AuthnRequest` messages. Each instance represents a single request and carries a unique ID (`uuid`) that you should store to validate the `InResponseTo` attribute of the eventual response.
+
+## Constructor
+
+```ruby
+OneLogin::RubySaml::Authrequest.new
+```
+
+Assigns a random UUID to `@uuid`. No arguments are required.
+
+```ruby
+request = OneLogin::RubySaml::Authrequest.new
+request.uuid
+# => "_abc123..."
+```
+
+---
+
+## Instance methods
+
+### `#create(settings, params = {})` → String
+
+Builds the full redirect URL including the deflated, base64-encoded `SAMLRequest` query parameter. Raises `OneLogin::RubySaml::SettingError` if `settings.idp_sso_service_url` is blank.
+
+```ruby
+redirect_to request.create(saml_settings)
+```
+
+<ParamField body="settings" type="OneLogin::RubySaml::Settings" required>
+  Fully configured SP settings. The method reads the following fields:
+  - `idp_sso_service_url` — the URL to redirect to (required)
+  - `idp_sso_service_binding` — determines whether the request is signed as a query parameter (redirect binding) or embedded in the XML (POST binding)
+  - `sp_entity_id` — written to `saml:Issuer`
+  - `assertion_consumer_service_url` — written to `AssertionConsumerServiceURL`
+  - `name_identifier_format` — written to `NameIDPolicy/@Format`
+  - `name_identifier_value_requested` — written to `saml:Subject/saml:NameID` if set
+  - `authn_context` / `authn_context_decl_ref` — written to `RequestedAuthnContext`
+  - `authn_context_comparison` — written to `RequestedAuthnContext/@Comparison` (defaults to `"exact"`)
+  - `passive`, `force_authn`, `protocol_binding`, `attributes_index`
+  - `compress_request` — deflate the XML before base64-encoding (default `true`)
+  - `security[:authn_requests_signed]` + `security[:signature_method]` — sign the request
+</ParamField>
+
+<ParamField body="params" type="Hash" default="{}">
+  Extra query-string parameters appended to the redirect URL.
+
+  <Expandable title="common params">
+    <ParamField body=":RelayState" type="String">
+      An opaque value (URL, session token, etc.) the IdP will echo back unchanged in its response. Also used when computing the redirect-binding signature — always pass `RelayState` here if you intend to include it, otherwise the signature will not cover it.
+
+      ```ruby
+      request.create(settings, RelayState: root_url)
+      ```
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+**Returns** the complete redirect URL as a `String`, for example:
+
+```
+https://idp.example.com/saml/sso?SAMLRequest=fZJBb...&RelayState=%2F&SigAlg=...&Signature=...
+```
+
+---
+
+### `#uuid` → String
+
+The unique ID assigned to this request during `initialize`. Written to the `ID` attribute of the `AuthnRequest` XML element and to `InResponseTo` in the eventual `SAMLResponse`. Store this value before redirecting.
+
+```ruby
+request = OneLogin::RubySaml::Authrequest.new
+session[:saml_request_id] = request.uuid
+redirect_to request.create(saml_settings)
+```
+
+Also accessible as `#request_id`.
+
+---
+
+### `#create_params(settings, params = {})` → Hash
+
+Lower-level method that returns the individual query-string parameters as a Hash instead of combining them into a URL. Useful when you need to construct the redirect URL yourself or inspect the parameters before sending.
+
+<ResponseField name="SAMLRequest" type="String">
+  Base64-encoded (and deflated, if `settings.compress_request` is `true`) `AuthnRequest` XML document.
+</ResponseField>
+
+<ResponseField name="RelayState" type="String">
+  Echoed back from `params[:RelayState]` if provided.
+</ResponseField>
+
+<ResponseField name="SigAlg" type="String">
+  Present when redirect-binding signing is enabled. The algorithm URI, e.g. `"http://www.w3.org/2000/09/xmldsig#rsa-sha256"`.
+</ResponseField>
+
+<ResponseField name="Signature" type="String">
+  Present when redirect-binding signing is enabled. Base64-encoded signature over `SAMLRequest=...&RelayState=...&SigAlg=...`.
+</ResponseField>
+
+```ruby
+params = request.create_params(saml_settings, RelayState: "/dashboard")
+# {
+#   "SAMLRequest" => "fZJBb...",
+#   "RelayState"  => "/dashboard",
+#   "SigAlg"      => "http://www.w3.org/2000/09/xmldsig#rsa-sha256",
+#   "Signature"   => "abc123..."
+# }
+```
+
+---
+
+## Signing behaviour
+
+Signing is automatic based on settings:
+
+- **HTTP-Redirect binding** — when `security[:authn_requests_signed]` is `true` and a signing key is available, the signature is appended as `SigAlg` and `Signature` query parameters.
+- **HTTP-POST binding** — when `security[:authn_requests_signed]` is `true`, the signature is embedded inside the XML document as a `<ds:Signature>` element.
+
+The binding is determined by `settings.idp_sso_service_binding`.
+
+---
+
+## Usage examples
+
+<CodeGroup>
+
+```ruby Basic SP-initiated SSO
+def init
+  request = OneLogin::RubySaml::Authrequest.new
+  redirect_to request.create(saml_settings)
+end
+```
+
+```ruby Storing UUID for InResponseTo validation
+def init
+  request = OneLogin::RubySaml::Authrequest.new
+
+  # Store the ID before redirecting — use session.delete in consume to prevent re-use
+  session[:saml_request_id] = request.uuid
+
+  redirect_to request.create(saml_settings)
+end
+
+def consume
+  request_id = session.delete(:saml_request_id)
+  raise "IdP-initiated login not permitted" if request_id.nil?
+
+  response = OneLogin::RubySaml::Response.new(
+    params[:SAMLResponse],
+    settings:           saml_settings,
+    matches_request_id: request_id
+  )
+
+  if response.is_valid?
+    session[:userid] = response.nameid
+  end
+end
+```
+
+```ruby Requesting a specific subject
+def init
+  request = OneLogin::RubySaml::Authrequest.new
+
+  # Ask the IdP to authenticate a specific user
+  saml_settings.name_identifier_value_requested = "alice@example.com"
+  saml_settings.name_identifier_format =
+    "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"
+
+  redirect_to request.create(saml_settings)
+end
+```
+
+```ruby With RelayState
+def init
+  request = OneLogin::RubySaml::Authrequest.new
+  session[:saml_request_id] = request.uuid
+
+  relay_state = url_for(controller: "dashboard", action: "index")
+  redirect_to request.create(saml_settings, RelayState: relay_state)
+end
+```
+
+</CodeGroup>
+
+<Note>
+  The `uuid` value follows the format `_` followed by a hex string (e.g. `_abc123def456...`). Some IdPs require the `ID` attribute to start with a letter or underscore — ruby-saml handles this automatically.
+</Note>

@@ -1,24 +1,11 @@
 {
-  "$schema": "https://mintlify.com/docs.json",
-  "name": "Ruby SAML",
+  "projectType": "sdk-library",
+  "projectName": "Ruby SAML",
+  "projectDescription": "A Ruby gem for implementing SAML 2.0 service provider (SP) authentication, enabling SSO integration with any SAML-compliant identity provider.",
   "theme": "luma",
-  "colors": {
-    "primary": "#bc574b",
-    "light": "#f9f9f2",
-    "dark": "#44535c"
-  },
-  "favicon": "https://media.brand.dev/ba52e41b-e7ff-45a0-b4d5-80ab3ac6e4fa.jpg",
-  "navbar": {
-    "primary": {
-      "type": "github",
-      "href": "https://github.com/SAML-Toolkits/ruby-saml"
-    }
-  },
-  "footer": {
-    "socials": {
-      "github": "https://github.com/SAML-Toolkits/ruby-saml"
-    }
-  },
+  "primaryColor": "#bc574b",
+  "lightColor": "#f9f9f2",
+  "darkColor": "#44535c",
   "navigation": {
     "tabs": [
       {
@@ -91,5 +78,29 @@
         ]
       }
     ]
-  }
+  },
+  "keyFeatures": [
+    "SP-initiated and IdP-initiated SSO authentication flows",
+    "Single Logout (SLO) support — both SP-initiated and IdP-initiated",
+    "IdP metadata parsing from XML or remote URL",
+    "XML signature verification and SAML assertion decryption (EncryptedAssertion)",
+    "SP metadata generation with optional digital signature",
+    "Multi-certificate support for key rollover and separate signing/encryption keys",
+    "Replay attack prevention via assertion ID tracking",
+    "Support for Ruby MRI 2.1+, JRuby 9.1+, and TruffleRuby"
+  ],
+  "publicApiSurface": [
+    "OneLogin::RubySaml::Settings",
+    "OneLogin::RubySaml::Response",
+    "OneLogin::RubySaml::Authrequest",
+    "OneLogin::RubySaml::Metadata",
+    "OneLogin::RubySaml::Logoutrequest",
+    "OneLogin::RubySaml::Logoutresponse",
+    "OneLogin::RubySaml::SloLogoutrequest",
+    "OneLogin::RubySaml::SloLogoutresponse",
+    "OneLogin::RubySaml::IdpMetadataParser",
+    "OneLogin::RubySaml::Attributes",
+    "OneLogin::RubySaml::Utils",
+    "OneLogin::RubySaml::Logging"
+  ]
 }

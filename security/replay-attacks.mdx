@@ -1,0 +1,222 @@
+---
+title: "Preventing Replay Attacks"
+description: "Protect your application from SAML assertion replay attacks."
+---
+
+A replay attack occurs when an attacker intercepts a valid SAML assertion and submits it again — potentially from a different session or device — to gain unauthorized access. Because a SAML assertion is a self-contained signed token, it is valid for as long as the IdP's `NotOnOrAfter` condition allows, which is typically several minutes.
+
+## What ruby-saml checks automatically
+
+ruby-saml enforces the assertion's time-validity window by comparing the current time against the `NotBefore` and `NotOnOrAfter` conditions on the `<Conditions>` element:
+
+```ruby
+# From response.rb validate_conditions:
+if not_before && now < (not_before - allowed_clock_drift)
+  error_msg = "Current time is earlier than NotBefore condition ..."
+  return append_error(error_msg)
+end
+
+if not_on_or_after && now >= (not_on_or_after + allowed_clock_drift)
+  error_msg = "Current time is on or after NotOnOrAfter condition ..."
+  return append_error(error_msg)
+end
+```
+
+This check is necessary but **not sufficient**. An attacker can replay the same assertion multiple times within the validity window and ruby-saml will accept each replay. Your application must implement the additional defenses described below.
+
+## Defense 1: Track assertion IDs
+
+The most direct defense is to record every assertion ID you have accepted and reject any response that presents an ID you have seen before.
+
+<Steps>
+  <Step title="Validate the response normally">
+    Call `response.is_valid?` as usual. Only proceed to the replay check after
+    the response has passed all of ruby-saml's built-in validations.
+
+    ```ruby
+    response = OneLogin::RubySaml::Response.new(
+      params[:SAMLResponse],
+      settings: saml_settings
+    )
+
+    unless response.is_valid?
+      authorize_failure("Invalid SAML response: #{response.errors.join(', ')}")
+      return
+    end
+    ```
+  </Step>
+
+  <Step title="Extract the assertion ID and expiry">
+    Use `response.assertion_id` to retrieve the unique identifier on the
+    `<Assertion>` element, and `response.not_on_or_after` to determine when the
+    assertion expires. If `not_on_or_after` is absent, apply a safe default
+    expiry:
+
+    ```ruby
+    assertion_id = response.assertion_id
+    authorize_failure("Assertion ID is mandatory") if assertion_id.nil?
+
+    assertion_not_on_or_after = response.not_on_or_after
+    # Default to 5 minutes if the IdP did not include NotOnOrAfter
+    assertion_expiry = assertion_not_on_or_after || (Time.now.utc + 300)
+    ```
+  </Step>
+
+  <Step title="Check the ID against your persistent cache">
+    Pass the ID and expiry to your replay-detection method. If the ID is new,
+    record it and proceed. If it has been seen before, reject the request.
+
+    ```ruby
+    if is_new_assertion?(assertion_id, assertion_expiry)
+      # New assertion — authorize the user
+      session[:userid]     = response.nameid
+      session[:attributes] = response.attributes
+    else
+      # Assertion ID already used — this is a replay attack
+      authorize_failure("Replay attack detected")
+    end
+    ```
+  </Step>
+
+  <Step title="Implement is_new_assertion? with Redis">
+    Store the ID in a shared, persistent cache. Use a Redis `SET NX EX`
+    command: `NX` means "set only if the key does not exist", and `EX` sets an
+    automatic expiry so your cache does not grow unboundedly.
+
+    ```ruby
+    def is_new_assertion?(assertion_id, expires_at)
+      ttl = (expires_at - Time.now.utc).to_i
+      return false if ttl <= 0  # assertion window already closed
+
+      # Returns true  if the key was newly created (first time seeing this ID)
+      # Returns false if the key already existed   (replay detected)
+      $redis.set("saml_assertion_ids:#{assertion_id}", "1", ex: ttl, nx: true)
+    end
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+  Store assertion IDs in a **shared, persistent cache** (Redis, Memcached, a
+  database table) that is accessible to every application server. Do not store
+  them in the user's session — sessions are per-process and per-user, so an
+  attacker replaying an assertion from a different session would bypass a
+  session-based check entirely.
+</Warning>
+
+## Defense 2: Enforce SP-initiated flow with `InResponseTo`
+
+The `InResponseTo` attribute on a SAML response binds the response to a specific `AuthnRequest` that your SP issued. Validating this attribute prevents:
+
+- **IdP-initiated logins** — responses that arrive without a corresponding request from your SP.
+- **Cross-session replays** — reuse of a valid response from one user's flow in another.
+
+<Steps>
+  <Step title="Store the AuthnRequest ID before redirecting">
+    When you create an `AuthnRequest`, the library assigns it a unique UUID
+    accessible via `request.uuid`. Save this in the user's session **before**
+    redirecting to the IdP.
+
+    ```ruby
+    def init
+      request = OneLogin::RubySaml::Authrequest.new
+      # Store the request ID so we can verify InResponseTo later
+      session[:saml_request_id] = request.uuid
+      redirect_to(request.create(saml_settings))
+    end
+    ```
+  </Step>
+
+  <Step title="Retrieve and delete the stored ID">
+    In your ACS action, use `session.delete` to pop the stored ID. This
+    ensures the ID can only be matched once — a second attempt with the same
+    response will find no stored ID and be rejected.
+
+    ```ruby
+    def consume
+      request_id = session.delete(:saml_request_id)
+
+      # Reject IdP-initiated responses if you require SP-initiated flow
+      raise "IdP-initiated login detected" if request_id.nil?
+    ```
+  </Step>
+
+  <Step title="Pass the ID to the Response constructor">
+    Provide the stored ID via the `matches_request_id:` option. ruby-saml will
+    compare it against the `InResponseTo` attribute on the SAML response and
+    fail validation if they do not match.
+
+    ```ruby
+      response = OneLogin::RubySaml::Response.new(
+        params[:SAMLResponse],
+        settings:          saml_settings,
+        matches_request_id: request_id
+      )
+
+      if response.is_valid?
+        session[:userid]     = response.nameid
+        session[:attributes] = response.attributes
+      else
+        authorize_failure("Invalid response: #{response.errors.join(', ')}")
+      end
+    end
+    ```
+
+    The validation error message when the IDs do not match:
+
+    ```
+    The InResponseTo of the Response: <response_id>, does not match the ID of
+    the AuthNRequest sent by the SP: <request_id>
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  Combining both defenses — assertion ID tracking **and** `InResponseTo`
+  validation — provides the strongest protection. `InResponseTo` alone does not
+  prevent a replay within the same validity window when the session cookie is
+  compromised. Assertion ID tracking closes that gap.
+</Note>
+
+## Complete consume action example
+
+```ruby
+def consume
+  # Pop the request ID — session.delete prevents re-use
+  request_id = session.delete(:saml_request_id)
+  raise "IdP-initiated login detected" if request_id.nil?
+
+  response = OneLogin::RubySaml::Response.new(
+    params[:SAMLResponse],
+    settings:           saml_settings,
+    matches_request_id: request_id
+  )
+
+  unless response.is_valid?
+    authorize_failure("Invalid SAML response")
+    return
+  end
+
+  # --- Replay attack prevention ---
+  assertion_id    = response.assertion_id
+  expiry          = response.not_on_or_after || (Time.now.utc + 300)
+
+  unless is_new_assertion?(assertion_id, expiry)
+    authorize_failure("Replay attack detected")
+    return
+  end
+
+  # Safe to authorize
+  session[:userid]     = response.nameid
+  session[:attributes] = response.attributes
+end
+
+private
+
+def is_new_assertion?(assertion_id, expires_at)
+  ttl = (expires_at - Time.now.utc).to_i
+  return false if ttl <= 0
+
+  $redis.set("saml_assertion_ids:#{assertion_id}", "1", ex: ttl, nx: true)
+end
+```

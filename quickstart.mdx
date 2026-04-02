@@ -1,80 +1,205 @@
 ---
 title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+description: "Implement SAML SSO in a Rails application in minutes."
 ---
 
-## Get started in three steps
+This guide walks through a complete Rails controller implementation for SAML SSO using `ruby-saml`. By the end, your application will handle authentication requests, validate IdP responses, and serve SP metadata.
 
-Get your documentation site running locally and make your first customization.
+<Note>
+  For a deeper understanding of how the SAML authentication flow works end-to-end, see the [Authentication Flow](/guides/authentication-flow) guide. For a full reference of all available settings, see the [Settings API](/api/settings) page.
+</Note>
 
-### Step 1: Set up your local environment
+## Prerequisites
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+- `ruby-saml` installed. See [Installation](/installation).
+- Your IdP's SSO URL and X.509 certificate (or certificate fingerprint).
 
-### Step 2: Deploy your changes
+<Steps>
+  <Step title="Configure your SAML settings">
+    Create a `saml_settings` helper method in your controller that returns a configured `OneLogin::RubySaml::Settings` object. This object is shared across all SAML actions.
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    ```ruby
+    def saml_settings
+      settings = OneLogin::RubySaml::Settings.new
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+      settings.assertion_consumer_service_url = "http://#{request.host}/saml/consume"
+      settings.sp_entity_id                   = "http://#{request.host}/saml/metadata"
+      settings.idp_sso_service_url            = "https://app.onelogin.com/saml/signon/#{OneLoginAppId}"
+      settings.idp_cert_fingerprint           = OneLoginAppCertFingerPrint
+      settings.name_identifier_format         = "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+      # Optional for most SAML IdPs
+      settings.authn_context = "urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport"
 
-### Step 3: Go live
+      settings
+    end
+    ```
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+    <Note>
+      `idp_cert_fingerprint` is convenient for development, but in production you should set `idp_cert` to the full X.509 certificate string instead. A fingerprint is a hash and is theoretically open to collision attacks. See the [Settings API](/api/settings) for the complete list of available options.
+    </Note>
+
+    **Key settings:**
+
+    | Setting | Description |
+    |---|---|
+    | `assertion_consumer_service_url` | The URL on your SP where the IdP posts the `SAMLResponse` after authentication. |
+    | `sp_entity_id` | A unique URI that identifies your SP to the IdP. Typically your metadata URL. |
+    | `idp_sso_service_url` | The IdP endpoint that initiates the SSO login. |
+    | `idp_cert` | The IdP's X.509 public certificate, used to verify response signatures. |
+    | `name_identifier_format` | The SAML NameID format the IdP should use when identifying the authenticated subject. |
+  </Step>
+
+  <Step title="Add the `init` action">
+    The `init` action builds an `AuthnRequest` and redirects the user to the IdP to authenticate.
+
+    ```ruby
+    def init
+      request = OneLogin::RubySaml::Authrequest.new
+      redirect_to(request.create(saml_settings))
+    end
+    ```
+
+    If your SP knows which user should authenticate at the IdP, you can hint this in the request:
+
+    ```ruby
+    def init
+      request = OneLogin::RubySaml::Authrequest.new
+      saml_settings.name_identifier_value_requested = "testuser@example.com"
+      saml_settings.name_identifier_format = "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"
+      redirect_to(request.create(saml_settings))
+    end
+    ```
+  </Step>
+
+  <Step title="Add the `consume` action">
+    The `consume` action receives the `SAMLResponse` POST from the IdP, validates it, and logs the user in.
+
+    ```ruby
+    def consume
+      response          = OneLogin::RubySaml::Response.new(params[:SAMLResponse])
+      response.settings = saml_settings
+
+      # Validate the SAML Response and check if the user already exists in the system
+      if response.is_valid?
+        # authorize_success, log the user
+        session[:userid]     = response.nameid
+        session[:attributes] = response.attributes
+      else
+        authorize_failure  # This method shows an error message
+        # List of errors is available in response.errors array
+      end
+    end
+    ```
+
+    <Warning>
+      If the IdP sends an **encrypted assertion**, you must pass `settings` to the `Response` constructor — not set it afterwards — so that the private key is available during decryption:
+
+      ```ruby
+      response = OneLogin::RubySaml::Response.new(params[:SAMLResponse], :settings => saml_settings)
+      ```
+
+      When in doubt, always initialize with settings. It works for both encrypted and unencrypted assertions.
+    </Warning>
+
+    After successful validation, `response.nameid` contains the authenticated user's identifier (e.g. their email address), and `response.attributes` is an `OneLogin::RubySaml::Attributes` object containing all `saml:AttributeStatement` values from the assertion.
+  </Step>
+
+  <Step title="Add the `metadata` action">
+    The `metadata` action generates and serves your SP's metadata XML. Share this URL with your IdP administrator so they can configure the trusted relationship.
+
+    ```ruby
+    def metadata
+      settings = saml_settings
+      meta     = OneLogin::RubySaml::Metadata.new
+      render xml: meta.generate(settings), content_type: "application/samlmetadata+xml"
+    end
+    ```
+
+    The IdP will poll this endpoint periodically, so changes to your SP settings propagate automatically without manual IdP reconfiguration.
+  </Step>
+
+  <Step title="Set up routes">
+    Add the SAML routes to your `config/routes.rb`:
+
+    ```ruby
+    Rails.application.routes.draw do
+      get  'saml/init',     to: 'saml#init'
+      post 'saml/consume',  to: 'saml#consume'
+      get  'saml/metadata', to: 'saml#metadata'
+    end
+    ```
+  </Step>
+</Steps>
+
+## Complete controller
+
+Here is the full `SamlController` combining all of the above:
+
+```ruby
+# This controller expects you to use the URLs /saml/init and /saml/consume in your IdP application.
+class SamlController < ApplicationController
+  def init
+    request = OneLogin::RubySaml::Authrequest.new
+    redirect_to(request.create(saml_settings))
+  end
+
+  def consume
+    response          = OneLogin::RubySaml::Response.new(params[:SAMLResponse])
+    response.settings = saml_settings
+
+    # We validate the SAML Response and check if the user already exists in the system
+    if response.is_valid?
+      # authorize_success, log the user
+      session[:userid]     = response.nameid
+      session[:attributes] = response.attributes
+    else
+      authorize_failure  # This method shows an error message
+      # List of errors is available in response.errors array
+    end
+  end
+
+  def metadata
+    settings = saml_settings
+    meta     = OneLogin::RubySaml::Metadata.new
+    render xml: meta.generate(settings), content_type: "application/samlmetadata+xml"
+  end
+
+  private
+
+  def saml_settings
+    settings = OneLogin::RubySaml::Settings.new
+
+    settings.assertion_consumer_service_url = "http://#{request.host}/saml/consume"
+    settings.sp_entity_id                   = "http://#{request.host}/saml/metadata"
+    settings.idp_sso_service_url            = "https://app.onelogin.com/saml/signon/#{OneLoginAppId}"
+    settings.idp_cert_fingerprint           = OneLoginAppCertFingerPrint
+    settings.name_identifier_format         = "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"
+
+    # Optional for most SAML IdPs
+    settings.authn_context = "urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport"
+
+    # Optional. Describe according to IdP specification (if supported) which attributes the SP desires to receive in SAMLResponse.
+    settings.attributes_index = 5
+    # Optional. Describe an attribute consuming service for support of additional attributes.
+    settings.attribute_consuming_service.configure do
+      service_name "Service"
+      service_index 5
+      add_attribute :name => "Name", :name_format => "Name Format", :friendly_name => "Friendly Name"
+    end
+
+    settings
+  end
+end
+```
+
+<Warning>
+  **Replay attack protection is your responsibility.** `ruby-saml` validates the assertion's `NotBefore` / `NotOnOrAfter` window, but does not prevent an attacker from replaying a valid assertion multiple times within that window. You must track used assertion IDs in a shared, persistent cache (such as Redis) and reject any assertion whose ID has already been seen. See the [Replay Attacks](/security/replay-attacks) security guide for a complete implementation.
+</Warning>
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+- **[Authentication Flow](/guides/authentication-flow)** — Understand the full SAML request/response lifecycle.
+- **[Settings API](/api/settings)** — Complete reference for all `OneLogin::RubySaml::Settings` options.
+- **[Signing & Encryption](/guides/signing-encryption)** — Sign your SP requests and decrypt IdP assertions.
+- **[Single Logout](/guides/single-logout)** — Add SP-initiated and IdP-initiated SLO to your controller.

@@ -1,0 +1,222 @@
+---
+title: "Metadata"
+description: "OneLogin::RubySaml::Metadata — generate SP metadata XML."
+---
+
+`OneLogin::RubySaml::Metadata` reads your `Settings` object and produces a SAML 2.0 SP metadata XML document. Give this URL to your IdP administrator so they can configure their side of the trust relationship.
+
+## Constructor
+
+```ruby
+OneLogin::RubySaml::Metadata.new
+```
+
+No arguments. The class is designed to be subclassed when you need to add custom XML elements.
+
+---
+
+## Methods
+
+### `#generate(settings, pretty_print = false, valid_until = nil, cache_duration = nil)` → String
+
+Generates and returns the complete SP metadata XML document as a String.
+
+```ruby
+meta = OneLogin::RubySaml::Metadata.new
+xml  = meta.generate(settings)
+```
+
+<ParamField body="settings" type="OneLogin::RubySaml::Settings" required>
+  The configured SP settings. The method reads:
+  - `sp_entity_id` → `entityID` attribute on `EntityDescriptor`
+  - `security[:authn_requests_signed]` → `AuthnRequestsSigned` on `SPSSODescriptor`
+  - `security[:want_assertions_signed]` → `WantAssertionsSigned` on `SPSSODescriptor`
+  - `certificate` / `private_key` or `sp_cert_multi` → `KeyDescriptor` elements
+  - `security[:want_assertions_encrypted]` → adds `KeyDescriptor use="encryption"`
+  - `single_logout_service_url` / `single_logout_service_binding` → `SingleLogoutService`
+  - `name_identifier_format` → `NameIDFormat`
+  - `assertion_consumer_service_url` / `assertion_consumer_service_binding` → `AssertionConsumerService`
+  - `attribute_consuming_service` → `AttributeConsumingService` (if configured)
+  - `security[:metadata_signed]` → embeds a `<ds:Signature>` using `certificate` + `private_key`
+  - `security[:check_sp_cert_expiration]` → excludes expired certificates from the output
+</ParamField>
+
+<ParamField body="pretty_print" type="Boolean" default="false">
+  When `true`, the XML is indented for human readability. Use `false` (the default) when the metadata will be signed, since whitespace normalization can invalidate the signature.
+</ParamField>
+
+<ParamField body="valid_until" type="DateTime | Time">
+  Optional. Sets the `validUntil` attribute on the root `EntityDescriptor` element. The IdP should stop trusting this metadata after this time.
+
+  ```ruby
+  valid_until = Time.now + 172800  # 2 days
+  meta.generate(settings, false, valid_until)
+  ```
+</ParamField>
+
+<ParamField body="cache_duration" type="Integer">
+  Optional. Sets the `cacheDuration` attribute (formatted as `PT<n>S`) on the root `EntityDescriptor`. Tells the IdP how long to cache the metadata.
+
+  ```ruby
+  cache_duration = 604800  # 1 week in seconds
+  meta.generate(settings, false, nil, cache_duration)
+  ```
+</ParamField>
+
+---
+
+### `#add_extras(root, settings)` — override hook
+
+A protected no-op method called during `#generate` after all standard elements have been appended to the root `EntityDescriptor` element. Override this in a subclass to append custom XML elements such as `Organization` or `ContactPerson`.
+
+```ruby
+def add_extras(root, _settings)
+  root  # return root unchanged (default behaviour)
+end
+```
+
+See [extending metadata](#extending-metadata) below for a complete example.
+
+---
+
+## Generated XML structure
+
+A typical `generate` call produces:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<md:EntityDescriptor
+  xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata"
+  ID="_abc123"
+  entityID="https://sp.example.com/saml/metadata"
+>
+  <md:SPSSODescriptor
+    protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol"
+    AuthnRequestsSigned="true"
+    WantAssertionsSigned="true"
+  >
+    <md:KeyDescriptor use="signing">
+      <ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+        <ds:X509Data><ds:X509Certificate>MIIC...</ds:X509Certificate></ds:X509Data>
+      </ds:KeyInfo>
+    </md:KeyDescriptor>
+    <md:KeyDescriptor use="encryption">
+      <ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+        <ds:X509Data><ds:X509Certificate>MIIC...</ds:X509Certificate></ds:X509Data>
+      </ds:KeyInfo>
+    </md:KeyDescriptor>
+    <md:SingleLogoutService
+      Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"
+      Location="https://sp.example.com/saml/logout"
+      ResponseLocation="https://sp.example.com/saml/logout"
+    />
+    <md:NameIDFormat>urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress</md:NameIDFormat>
+    <md:AssertionConsumerService
+      Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"
+      Location="https://sp.example.com/saml/consume"
+      isDefault="true"
+      index="0"
+    />
+  </md:SPSSODescriptor>
+</md:EntityDescriptor>
+```
+
+---
+
+## Rails controller example
+
+Serve your metadata at a stable URL and give it to your IdP administrator. The correct content type is `application/samlmetadata+xml`.
+
+```ruby
+class SamlController < ApplicationController
+  # GET /saml/metadata
+  def metadata
+    settings = Account.saml_settings
+    meta     = OneLogin::RubySaml::Metadata.new
+
+    render xml: meta.generate(settings), content_type: "application/samlmetadata+xml"
+  end
+end
+```
+
+With `validUntil` and `cacheDuration`:
+
+```ruby
+def metadata
+  settings       = Account.saml_settings
+  valid_until    = Time.now + 172800   # 2 days
+  cache_duration = 604800              # 1 week in seconds
+
+  meta = OneLogin::RubySaml::Metadata.new
+  render xml: meta.generate(settings, false, valid_until, cache_duration),
+         content_type: "application/samlmetadata+xml"
+end
+```
+
+<Tip>
+  The IdP polls your metadata URL periodically. Keep the endpoint publicly accessible and update your `Settings` there — changes propagate without requiring manual configuration on the IdP side.
+</Tip>
+
+---
+
+## Extending metadata
+
+Some IdPs require `Organization` and `ContactPerson` elements that are not part of the standard ruby-saml output. Subclass `Metadata` and override `#add_extras`:
+
+```ruby
+class MyMetadata < OneLogin::RubySaml::Metadata
+  def add_extras(root, _settings)
+    org = root.add_element("md:Organization")
+    org.add_element("md:OrganizationName",        "xml:lang" => "en-US").text = "ACME Inc."
+    org.add_element("md:OrganizationDisplayName", "xml:lang" => "en-US").text = "ACME"
+    org.add_element("md:OrganizationURL",         "xml:lang" => "en-US").text = "https://www.acme.com"
+
+    cp = root.add_element("md:ContactPerson", "contactType" => "technical")
+    cp.add_element("md:GivenName").text    = "ACME SAML Team"
+    cp.add_element("md:EmailAddress").text = "saml@acme.com"
+  end
+end
+
+# Use your subclass everywhere you previously used Metadata:
+MyMetadata.new.generate(settings)
+```
+
+In your controller:
+
+```ruby
+def metadata
+  settings = Account.saml_settings
+  render xml: MyMetadata.new.generate(settings),
+         content_type: "application/samlmetadata+xml"
+end
+```
+
+---
+
+## Attribute consuming service
+
+If your SP requests specific attributes from the IdP, configure an `AttributeConsumingService` on your settings before generating metadata:
+
+```ruby
+settings.attributes_index = 5
+settings.attribute_consuming_service.configure do
+  service_name  "My Application"
+  service_index 5
+  add_attribute name: "email",
+                name_format: "urn:oasis:names:tc:SAML:2.0:attrname-format:basic",
+                friendly_name: "Email Address"
+  add_attribute name: "groups",
+                name_format: "urn:oasis:names:tc:SAML:2.0:attrname-format:basic",
+                friendly_name: "Groups",
+                is_required: true
+end
+
+meta = OneLogin::RubySaml::Metadata.new
+xml  = meta.generate(settings)
+```
+
+This appends an `<md:AttributeConsumingService>` block to the `SPSSODescriptor` listing all requested attributes. The IdP uses this to know which attributes to include in SAML responses.
+
+<Warning>
+  Do not pass `pretty_print: true` when `security[:metadata_signed]` is `true`. Whitespace added during pretty-printing is included in the document and will cause signature verification to fail.
+</Warning>

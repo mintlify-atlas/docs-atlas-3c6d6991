@@ -1,0 +1,186 @@
+---
+title: "Signature Validation"
+description: "Verify IdP signatures on SAML responses and assertions."
+---
+
+ruby-saml validates the digital signature on every SAML response to confirm the message was issued by the trusted Identity Provider and has not been tampered with. You must configure at least one of the certificate or fingerprint settings for validation to succeed — the library enforces this at runtime:
+
+```ruby
+# validate_response_state in response.rb raises this error when none are set:
+# "No fingerprint or certificate on settings"
+if settings.idp_cert_fingerprint.nil? && settings.idp_cert.nil? && settings.idp_cert_multi.nil?
+  return append_error("No fingerprint or certificate on settings")
+end
+```
+
+## Certificate vs. fingerprint
+
+There are two ways to identify the IdP's signing certificate.
+
+### `idp_cert` (recommended)
+
+Provide the full PEM-encoded X.509 public certificate of the IdP:
+
+```ruby
+settings.idp_cert = <<~CERT
+  -----BEGIN CERTIFICATE-----
+  MIICajCCAdOgAwIBAgIBADANBgkqhkiG9w0BAQ...
+  -----END CERTIFICATE-----
+CERT
+```
+
+When `idp_cert` is set, ruby-saml calls `validate_document_with_cert`, which compares the certificate embedded in the `<ds:X509Certificate>` element of the SAML response against the one you registered. If the certificates differ, the response is rejected.
+
+### `idp_cert_fingerprint` + `idp_cert_fingerprint_algorithm`
+
+Provide a hex fingerprint of the IdP certificate alongside the algorithm used to compute it:
+
+```ruby
+settings.idp_cert_fingerprint           = "9E:65:2E:03:06:8D:80:F2:86:C7:6C:8B:8C:C3:2F:03:23:56:4C:5E"
+settings.idp_cert_fingerprint_algorithm = "http://www.w3.org/2000/09/xmldsig#sha1"
+```
+
+The default fingerprint algorithm is `XMLSecurity::Document::SHA1` (`"http://www.w3.org/2000/09/xmldsig#sha1"`). You may also use SHA256, SHA384, or SHA512 URIs.
+
+<Warning>
+  **Do not use fingerprints in production.** A fingerprint is a hash of the
+  certificate. Hash functions are susceptible to collision attacks, which means
+  an attacker could craft a different certificate that produces the same
+  fingerprint and bypass signature validation. Other SAML toolkits have
+  deprecated the fingerprint mechanism entirely. ruby-saml retains it for
+  compatibility and for use in test environments only.
+</Warning>
+
+<Note>
+  Register the full IdP certificate (`idp_cert`) in all production deployments.
+  This is the only mechanism available for validating signatures over the HTTP
+  Redirect binding, and it eliminates the collision-attack risk present in the
+  fingerprint approach.
+</Note>
+
+## Redirect binding requirement
+
+When the IdP sends a `SAMLResponse` or `LogoutRequest` over the **HTTP-Redirect** binding, the signature covers the URL-encoded query string rather than an XML element. The embedded `<ds:X509Certificate>` is not present in redirect-binding messages, so the fingerprint is useless — ruby-saml requires a full certificate to validate redirect-binding signatures.
+
+If you want to accept redirect-binding SLO messages without providing a certificate, pass `:relax_signature_validation` to `SloLogoutrequest` or `Logoutresponse`:
+
+```ruby
+# Skip signature validation when no IdP certificate is configured
+logout_request = OneLogin::RubySaml::SloLogoutrequest.new(
+  params[:SAMLRequest],
+  settings: settings,
+  relax_signature_validation: true
+)
+
+logout_response = OneLogin::RubySaml::Logoutresponse.new(
+  params[:SAMLResponse],
+  settings,
+  relax_signature_validation: true
+)
+```
+
+<Warning>
+  `:relax_signature_validation` disables signature verification entirely when no
+  certificate is present. Only use this during development or when your threat
+  model explicitly accepts unsigned SLO messages.
+</Warning>
+
+## Multiple IdP certificates (`idp_cert_multi`)
+
+When the IdP publishes more than one certificate — for example during a key rollover, or because it uses separate keys for signing and encryption — use `idp_cert_multi` instead of `idp_cert`. When `idp_cert_multi` is set, both `idp_cert` and `idp_cert_fingerprint` are ignored.
+
+```ruby
+settings.idp_cert_multi = {
+  signing: [
+    "-----BEGIN CERTIFICATE-----\nMIICajCCAdOg... (current signing cert)\n-----END CERTIFICATE-----",
+    "-----BEGIN CERTIFICATE-----\nMIICajCCAdOg... (incoming signing cert)\n-----END CERTIFICATE-----"
+  ],
+  encryption: [
+    "-----BEGIN CERTIFICATE-----\nMIICajCCAdOg... (encryption cert)\n-----END CERTIFICATE-----"
+  ]
+}
+```
+
+The `:signing` and `:encryption` arrays each hold one or more PEM strings. During signature validation, ruby-saml iterates every certificate in `:signing` and accepts the response if **any one** certificate validates the signature successfully:
+
+```ruby
+# From response.rb validate_signature:
+idp_certs[:signing].each do |idp_cert|
+  valid = doc.validate_document_with_cert(idp_cert, true)
+  if valid
+    # At least one certificate is valid, restore the old accumulated errors
+    @errors = old_errors
+    break
+  end
+end
+```
+
+<Note>
+  Use `idp_cert_multi` during IdP certificate rollovers. Publish both the old
+  and new certificates in the `:signing` array until all SP instances have
+  picked up the new configuration, then remove the old certificate.
+</Note>
+
+## Requiring signed assertions
+
+To instruct the IdP to sign its SAML assertions (not just the response envelope), set:
+
+```ruby
+settings.security[:want_assertions_signed] = true
+```
+
+This adds `WantAssertionsSigned="true"` to the SP metadata and causes ruby-saml to reject any response whose `<Assertion>` element does not carry a `<ds:Signature>`:
+
+```ruby
+# From response.rb validate_signed_elements:
+if settings.security[:want_assertions_signed] && !(signed_elements.include? "Assertion")
+  return append_error("The Assertion of the Response is not signed and the SP requires it")
+end
+```
+
+## Soft mode and validation failures
+
+By default ruby-saml operates in **soft mode** — signature and certificate failures are added to `response.errors` and `is_valid?` returns `false`, but no exception is raised. This is controlled by the top-level `settings.soft` attribute (not `settings.security[:soft]`).
+
+```ruby
+# Soft mode (default) — collect errors, return false
+settings.soft = true
+
+# Hard mode — raise OneLogin::RubySaml::ValidationError on failure
+settings.soft = false
+```
+
+With soft mode disabled, any validation failure raises `OneLogin::RubySaml::ValidationError`. This is appropriate for scenarios where you want the application to fail loudly rather than silently accept an invalid response.
+
+<AccordionGroup>
+  <Accordion title="How validate_document_with_cert works">
+    When `idp_cert_multi` is set and `:signing` is non-empty, ruby-saml calls
+    `doc.validate_document_with_cert(idp_cert, true)` for each certificate. This
+    method extracts the `<ds:X509Certificate>` from the response, compares it to
+    the registered certificate PEM, then verifies the cryptographic signature
+    using OpenSSL:
+
+    ```ruby
+    # From xml_security.rb:
+    unless cert.public_key.verify(@signature_algorithm.new, @signature, @cached_signed_info)
+      return append_error("Key validation error", soft)
+    end
+    ```
+
+    When using `idp_cert` alone (no `idp_cert_multi`), the library calls
+    `validate_document` which additionally supports fingerprint matching as a
+    fallback when no embedded certificate is present.
+  </Accordion>
+
+  <Accordion title="Fingerprint algorithm options">
+    The `idp_cert_fingerprint_algorithm` setting accepts the following URI values,
+    which correspond to constants on `XMLSecurity::Document`:
+
+    | Constant | URI |
+    |---|---|
+    | `XMLSecurity::Document::SHA1` (default) | `http://www.w3.org/2000/09/xmldsig#sha1` |
+    | `XMLSecurity::Document::SHA256` | `http://www.w3.org/2001/04/xmlenc#sha256` |
+    | `XMLSecurity::Document::SHA384` | `http://www.w3.org/2001/04/xmldsig-more#sha384` |
+    | `XMLSecurity::Document::SHA512` | `http://www.w3.org/2001/04/xmlenc#sha512` |
+  </Accordion>
+</AccordionGroup>

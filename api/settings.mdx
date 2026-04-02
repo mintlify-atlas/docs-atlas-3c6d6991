@@ -1,0 +1,376 @@
+---
+title: "Settings"
+description: "OneLogin::RubySaml::Settings — configure your SAML service provider."
+---
+
+`OneLogin::RubySaml::Settings` is the central configuration object. You instantiate it once (typically in a `saml_settings` helper method) and pass it to every other ruby-saml class.
+
+## Constructor
+
+```ruby
+OneLogin::RubySaml::Settings.new(overrides = {}, keep_security_attributes = false)
+```
+
+<ParamField body="overrides" type="Hash" default="{}">
+  A hash of attribute key/value pairs to merge over the defaults. Every public `attr_accessor` on `Settings` can be supplied here.
+</ParamField>
+
+<ParamField body="keep_security_attributes" type="Boolean" default="false">
+  When `true`, any `:security` key inside `overrides` is deep-merged with `DEFAULTS[:security]` instead of replacing it entirely. Useful when you only want to override a subset of security flags without losing the defaults for the rest.
+</ParamField>
+
+---
+
+## IdP attributes
+
+<ParamField body="idp_entity_id" type="String">
+  The entity ID URI of the Identity Provider. Used to validate the `Issuer` element in SAML responses.
+</ParamField>
+
+<ParamField body="idp_sso_service_url" type="String">
+  The IdP Single Sign-On endpoint URL. Requests are redirected here during SP-initiated SSO. Aliased by the deprecated `idp_sso_target_url`.
+</ParamField>
+
+<ParamField body="idp_sso_service_binding" type="String">
+  The binding for the IdP SSO service. Accepts a full URN string or the symbol `:post` / `:redirect`. Defaults to `:redirect` unless `security[:embed_sign]` is `true`, in which case it defaults to `:post`.
+</ParamField>
+
+<ParamField body="idp_slo_service_url" type="String">
+  The IdP Single Logout endpoint URL. Aliased by the deprecated `idp_slo_target_url`.
+</ParamField>
+
+<ParamField body="idp_slo_service_binding" type="String">
+  The binding for the IdP SLO service. Accepts a full URN string or the symbol `:post` / `:redirect`.
+</ParamField>
+
+<ParamField body="idp_slo_response_service_url" type="String">
+  Optional separate URL for IdP Single Logout *response* messages (distinct from the request endpoint).
+</ParamField>
+
+<ParamField body="idp_cert" type="String">
+  PEM-encoded X.509 certificate of the IdP, including `-----BEGIN CERTIFICATE-----` / `-----END CERTIFICATE-----` headers. Used to verify the signature on SAML responses. Takes precedence over `idp_cert_fingerprint` when both are set.
+</ParamField>
+
+<ParamField body="idp_cert_fingerprint" type="String">
+  Hex fingerprint of the IdP certificate (e.g. `"9E:65:2E:03:..."`). A less secure alternative to supplying the full `idp_cert`. Not usable for redirect-binding signature validation.
+</ParamField>
+
+<ParamField body="idp_cert_fingerprint_algorithm" type="String" default="http://www.w3.org/2000/09/xmldsig#sha1">
+  Algorithm URI used when computing the certificate fingerprint. Defaults to `XMLSecurity::Document::SHA1`.
+</ParamField>
+
+<ParamField body="idp_cert_multi" type="Hash">
+  Multiple IdP certificates for scenarios where the IdP uses separate signing/encryption certs, or during key rollover. When set, `idp_cert` and `idp_cert_fingerprint` are ignored.
+
+  <Expandable title="idp_cert_multi shape">
+    ```ruby
+    {
+      signing:    ["PEM cert string", "PEM cert string"],
+      encryption: ["PEM cert string"]
+    }
+    ```
+
+    Both `:signing` and `:encryption` accept arrays of PEM-encoded certificate strings.
+  </Expandable>
+</ParamField>
+
+<ParamField body="idp_attribute_names" type="Array&lt;String&gt;">
+  List of attribute names the IdP is expected to release. Populated automatically when using `IdpMetadataParser`.
+</ParamField>
+
+<ParamField body="idp_name_qualifier" type="String">
+  The `NameQualifier` to use in SAML requests directed at this IdP.
+</ParamField>
+
+<ParamField body="valid_until" type="DateTime">
+  Expiry time written into the SP metadata `validUntil` attribute.
+</ParamField>
+
+---
+
+## SP attributes
+
+<ParamField body="sp_entity_id" type="String">
+  The entity ID URI that uniquely identifies your Service Provider. Written to the `Issuer` element in outgoing requests. The deprecated `issuer` attribute is an alias for this field.
+</ParamField>
+
+<ParamField body="assertion_consumer_service_url" type="String">
+  The SP URL that receives the IdP's `POST`-bound SAML response (`/saml/consume`).
+</ParamField>
+
+<ParamField body="assertion_consumer_service_binding" type="String" default="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST">
+  Binding for the Assertion Consumer Service. Defaults to HTTP-POST. Accepts `:post` or `:redirect` symbols as well as full URN strings.
+</ParamField>
+
+<ParamField body="single_logout_service_url" type="String">
+  The SP endpoint that handles incoming SLO requests and responses. Aliased by the deprecated `assertion_consumer_logout_service_url`.
+</ParamField>
+
+<ParamField body="single_logout_service_binding" type="String" default="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect">
+  Binding for the Single Logout Service. Defaults to HTTP-Redirect.
+</ParamField>
+
+<ParamField body="sp_name_qualifier" type="String">
+  Sets the `SPNameQualifier` attribute in outgoing authentication requests.
+</ParamField>
+
+<ParamField body="name_identifier_format" type="String">
+  Requested NameID format, e.g. `"urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"`. Written to the `NameIDPolicy` element in `AuthnRequest`.
+</ParamField>
+
+<ParamField body="name_identifier_value" type="String">
+  The current authenticated user's NameID. Used when building SLO logout requests.
+</ParamField>
+
+<ParamField body="name_identifier_value_requested" type="String">
+  If set, the SP requests the IdP authenticate a *specific* subject. Written to a `saml:Subject` element in the `AuthnRequest`.
+</ParamField>
+
+<ParamField body="sessionindex" type="String">
+  The `SessionIndex` from the last authentication response. Used when building SLO logout requests.
+</ParamField>
+
+<ParamField body="compress_request" type="Boolean" default="true">
+  Deflate-compress the `SAMLRequest` before base64-encoding it (required for HTTP-Redirect binding).
+</ParamField>
+
+<ParamField body="compress_response" type="Boolean" default="true">
+  Deflate-compress the `SAMLResponse` before base64-encoding it.
+</ParamField>
+
+<ParamField body="message_max_bytesize" type="Integer" default="250000">
+  Maximum allowed byte size of a decompressed SAML message. Increase this limit if your IdP sends large assertions (e.g. groups claims). Protects against decompression-bomb DoS attacks.
+</ParamField>
+
+<ParamField body="check_malformed_doc" type="Boolean" default="true">
+  Validate the SAML response against the SAML 2.0 protocol schema (`saml-schema-protocol-2.0.xsd`).
+</ParamField>
+
+<ParamField body="double_quote_xml_attribute_values" type="Boolean" default="false">
+  Use double-quote delimiters for XML attribute values in generated documents.
+</ParamField>
+
+<ParamField body="passive" type="Boolean">
+  Sets `IsPassive="true"` on the `AuthnRequest`. When `true`, the IdP must not take control of the user interface.
+</ParamField>
+
+<ParamField body="protocol_binding" type="String">
+  Sets the `ProtocolBinding` attribute on the `AuthnRequest`. Accepts `:post` / `:redirect` symbols or a full URN string.
+</ParamField>
+
+<ParamField body="attributes_index" type="Integer">
+  The `AttributeConsumingServiceIndex` sent in the `AuthnRequest` to tell the IdP which attribute set to include in its response.
+</ParamField>
+
+<ParamField body="force_authn" type="Boolean">
+  Sets `ForceAuthn="true"` on the `AuthnRequest`, requiring the IdP to re-authenticate the user even if an active session exists.
+</ParamField>
+
+<ParamField body="certificate" type="String">
+  PEM-encoded SP public certificate (with headers). Used for signing outgoing messages and included in SP metadata as `<md:KeyDescriptor use="signing">` and `<md:KeyDescriptor use="encryption">`. Cannot be used together with `sp_cert_multi`.
+</ParamField>
+
+<ParamField body="private_key" type="String">
+  PEM-encoded SP private key (with headers). Used to sign outgoing messages and decrypt incoming `EncryptedAssertion` elements. Cannot be used together with `sp_cert_multi`.
+</ParamField>
+
+<ParamField body="sp_cert_multi" type="Hash">
+  Advanced multi-certificate configuration for key rollover or separate signing/encryption keys. Mutually exclusive with `certificate`, `certificate_new`, and `private_key`.
+
+  <Expandable title="sp_cert_multi shape">
+    ```ruby
+    settings.sp_cert_multi = {
+      signing: [
+        { certificate: cert1, private_key: key1 },
+        { certificate: cert2, private_key: key2 }  # new cert during rollover
+      ],
+      encryption: [
+        { certificate: cert1, private_key: key1 }
+      ]
+    }
+    ```
+
+    Each entry is a Hash with `:certificate` (PEM string) and `:private_key` (PEM string) keys. During signing, the **first** entry is used. During decryption, each key is tried until one succeeds.
+  </Expandable>
+</ParamField>
+
+<ParamField body="authn_context" type="String | Array&lt;String&gt;">
+  One or more `AuthnContextClassRef` URIs to include in the `RequestedAuthnContext` element of the `AuthnRequest`. Common value: `"urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport"`.
+</ParamField>
+
+<ParamField body="authn_context_comparison" type="String" default="exact">
+  The `Comparison` attribute of `RequestedAuthnContext`. Allowed values: `"exact"`, `"minimum"`, `"maximum"`, `"better"`.
+</ParamField>
+
+<ParamField body="authn_context_decl_ref" type="String | Array&lt;String&gt;">
+  One or more `AuthnContextDeclRef` URIs to include in `RequestedAuthnContext`.
+</ParamField>
+
+<ParamField body="soft" type="Boolean" default="true">
+  When `true`, validation failures populate `errors` instead of raising `OneLogin::RubySaml::ValidationError`. Set to `false` for fail-fast behaviour in strict environments.
+</ParamField>
+
+---
+
+## Security hash
+
+All security flags live in `settings.security`, a Hash. Pass them in the constructor via `overrides[:security]` or assign individual keys after construction.
+
+<Warning>
+  Use `keep_security_attributes: true` in the constructor when supplying a partial `:security` hash to avoid losing default values for unspecified keys.
+</Warning>
+
+<ResponseField name="authn_requests_signed" type="Boolean" default="false">
+  Sign outgoing `AuthnRequest` messages with the SP private key.
+</ResponseField>
+
+<ResponseField name="logout_requests_signed" type="Boolean" default="false">
+  Sign outgoing SLO `LogoutRequest` messages.
+</ResponseField>
+
+<ResponseField name="logout_responses_signed" type="Boolean" default="false">
+  Sign outgoing SLO `LogoutResponse` messages.
+</ResponseField>
+
+<ResponseField name="want_assertions_signed" type="Boolean" default="false">
+  Require that the IdP signs the SAML `Assertion` element. Adds `WantAssertionsSigned="true"` to SP metadata.
+</ResponseField>
+
+<ResponseField name="want_assertions_encrypted" type="Boolean" default="false">
+  Require that the IdP encrypts the SAML `Assertion`. Adds `<md:KeyDescriptor use="encryption">` to SP metadata and rejects unencrypted assertions.
+</ResponseField>
+
+<ResponseField name="want_name_id" type="Boolean" default="false">
+  Require that the SAML response contains a `NameID` element. Note: the key is `:want_name_id`, not `:want_name_id_encrypted`.
+</ResponseField>
+
+<ResponseField name="metadata_signed" type="Boolean" default="false">
+  Embed a `<ds:Signature>` in generated SP metadata XML.
+</ResponseField>
+
+<ResponseField name="digest_method" type="String" default="http://www.w3.org/2000/09/xmldsig#sha1">
+  XML digest algorithm URI for signing. Use `XMLSecurity::Document::SHA256` in production.
+</ResponseField>
+
+<ResponseField name="signature_method" type="String" default="http://www.w3.org/2000/09/xmldsig#rsa-sha1">
+  XML signature algorithm URI. Use `XMLSecurity::Document::RSA_SHA256` in production.
+</ResponseField>
+
+<ResponseField name="check_idp_cert_expiration" type="Boolean" default="false">
+  Raise `ValidationError` when the IdP X.509 certificate is expired.
+</ResponseField>
+
+<ResponseField name="check_sp_cert_expiration" type="Boolean" default="false">
+  Raise `ValidationError` when the SP X.509 certificate is expired. Also suppresses expired certificates from appearing in generated SP metadata.
+</ResponseField>
+
+<ResponseField name="strict_audience_validation" type="Boolean" default="false">
+  When `true`, an `<AudienceRestriction>` containing only empty `<Audience>` elements is treated as invalid.
+</ResponseField>
+
+<ResponseField name="lowercase_url_encoding" type="Boolean" default="false">
+  Encode query-string parameter names in lowercase. Enable for ADFS compatibility when verifying redirect-binding signatures.
+</ResponseField>
+
+<ResponseField name="embed_sign" type="Boolean" default="false">
+  Deprecated. Embed the signature inside the XML document rather than appending it as a query parameter. Use `idp_sso_service_binding` / `idp_slo_service_binding` set to `:post` instead.
+</ResponseField>
+
+---
+
+## Deprecated attributes
+
+<Warning>
+  The following attributes are kept for backwards compatibility. Prefer the replacement shown for each.
+</Warning>
+
+| Deprecated attribute | Replacement |
+|---|---|
+| `issuer` | `sp_entity_id` |
+| `idp_sso_target_url` | `idp_sso_service_url` |
+| `idp_slo_target_url` | `idp_slo_service_url` |
+| `certificate_new` | `sp_cert_multi` |
+| `assertion_consumer_logout_service_url` | `single_logout_service_url` |
+| `assertion_consumer_logout_service_binding` | `single_logout_service_binding` |
+
+---
+
+## Helper methods
+
+<ResponseField name="get_fingerprint" type="String">
+  Returns the fingerprint of the configured IdP certificate. Computes the fingerprint from `idp_cert` if `idp_cert_fingerprint` is not set.
+</ResponseField>
+
+<ResponseField name="get_idp_cert" type="OpenSSL::X509::Certificate | nil">
+  Builds and returns an `OpenSSL::X509::Certificate` object from `idp_cert`.
+</ResponseField>
+
+<ResponseField name="get_idp_cert_multi" type="Hash">
+  Returns `{ signing: [...], encryption: [...] }` arrays of `OpenSSL::X509::Certificate` objects built from `idp_cert_multi`.
+</ResponseField>
+
+<ResponseField name="get_sp_certs" type="Hash">
+  Returns `{ signing: [[cert, key], ...], encryption: [[cert, key], ...] }` pairs. If `security[:check_sp_cert_expiration]` is `true`, expired certificates are filtered out.
+</ResponseField>
+
+<ResponseField name="get_sp_signing_pair" type="Array">
+  Convenience method. Returns the first `[OpenSSL::X509::Certificate, OpenSSL::PKey::RSA]` pair from the signing list.
+</ResponseField>
+
+<ResponseField name="get_sp_signing_key" type="OpenSSL::PKey::RSA">
+  Returns the SP signing private key.
+</ResponseField>
+
+<ResponseField name="get_sp_decryption_keys" type="Array&lt;OpenSSL::PKey::RSA&gt;">
+  Returns all unique SP private keys available for decrypting `EncryptedAssertion` elements.
+</ResponseField>
+
+---
+
+## Full configuration example
+
+```ruby
+def saml_settings
+  settings = OneLogin::RubySaml::Settings.new
+
+  # IdP settings (provided by your IdP administrator)
+  settings.idp_entity_id               = "https://idp.example.com/saml/metadata"
+  settings.idp_sso_service_url         = "https://idp.example.com/saml/sso"
+  settings.idp_sso_service_binding     = :redirect  # or :post
+  settings.idp_slo_service_url         = "https://idp.example.com/saml/slo"
+  settings.idp_slo_service_binding     = :redirect
+  settings.idp_cert                    = File.read("idp_cert.pem")
+
+  # SP settings
+  settings.sp_entity_id                = "https://sp.example.com/saml/metadata"
+  settings.assertion_consumer_service_url = "https://sp.example.com/saml/consume"
+  settings.single_logout_service_url   = "https://sp.example.com/saml/logout"
+  settings.name_identifier_format      = "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"
+
+  # SP certificate and key (for signing + decryption)
+  settings.certificate = File.read("sp_cert.pem")
+  settings.private_key = File.read("sp_key.pem")
+
+  # Authentication context
+  settings.authn_context            = "urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport"
+  settings.authn_context_comparison = "exact"
+
+  # Security flags
+  settings.security[:authn_requests_signed]   = true
+  settings.security[:logout_requests_signed]  = true
+  settings.security[:logout_responses_signed] = true
+  settings.security[:want_assertions_signed]  = true
+  settings.security[:want_assertions_encrypted] = true
+  settings.security[:metadata_signed]         = true
+  settings.security[:digest_method]           = XMLSecurity::Document::SHA256
+  settings.security[:signature_method]        = XMLSecurity::Document::RSA_SHA256
+  settings.security[:check_idp_cert_expiration] = true
+  settings.security[:check_sp_cert_expiration]  = true
+
+  settings
+end
+```
+
+<Tip>
+  Pass settings as the `:security` key in the constructor hash with `keep_security_attributes: true` to avoid accidentally clearing security defaults you don't override.
+</Tip>

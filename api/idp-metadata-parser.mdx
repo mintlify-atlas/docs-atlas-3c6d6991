@@ -1,0 +1,276 @@
+---
+title: "IdpMetadataParser"
+description: "OneLogin::RubySaml::IdpMetadataParser — load IdP configuration from SAML metadata."
+---
+
+`OneLogin::RubySaml::IdpMetadataParser` fetches and parses SAML 2.0 Identity Provider metadata XML, populating a `Settings` object (or returning a `Hash`) with IdP configuration extracted from the metadata.
+
+<Warning>
+  **Security:** Ruby SAML does not validate that the metadata URL you supply is correct or trusted. You are responsible for ensuring the URL points to a legitimate IdP metadata endpoint before calling `parse_remote` or `parse_remote_to_hash`.
+</Warning>
+
+## Constructor
+
+```ruby
+IdpMetadataParser.new → IdpMetadataParser
+```
+
+Creates a new parser instance. No arguments are required.
+
+```ruby
+idp_metadata_parser = OneLogin::RubySaml::IdpMetadataParser.new
+```
+
+---
+
+## `#parse`
+
+```ruby
+parse(idp_metadata, options = {}) → OneLogin::RubySaml::Settings
+```
+
+Parses an IdP metadata XML string and returns a populated `Settings` object.
+
+If `options[:settings]` is an existing `Settings` instance, the parsed values are merged into it and the same instance is returned. If it is a `Hash`, a new `Settings` is created by merging the hash with the parsed metadata. If `options[:settings]` is omitted, a new `Settings` is created from the parsed metadata alone.
+
+The `cacheDuration` attribute from the metadata is converted to a `validUntil` timestamp and then removed from the result (only `valid_until` is stored on `Settings`).
+
+### Parameters
+
+<ParamField path="idp_metadata" type="String" required>
+  The raw XML string of the IdP metadata document.
+</ParamField>
+
+<ParamField path="options" type="Hash" default="{}">
+  Parsing options.
+
+  <Expandable title="options keys">
+    <ParamField path="options[:settings]" type="OneLogin::RubySaml::Settings | Hash">
+      An existing `Settings` instance to merge parsed metadata into, or a `Hash` of settings overrides. When omitted, a fresh `Settings` object is created.
+    </ParamField>
+
+    <ParamField path="options[:entity_id]" type="String">
+      When the metadata document contains multiple `<EntityDescriptor>` elements, only the descriptor whose `entityID` matches this value is used. When omitted, the first descriptor is used.
+    </ParamField>
+
+    <ParamField path="options[:name_id_format]" type="String | Array<String>">
+      Preferred `NameIDFormat` value(s) in priority order. The first value present in the metadata is selected. When omitted, the first format in the metadata is used.
+    </ParamField>
+
+    <ParamField path="options[:sso_binding]" type="String | Array<String>">
+      Preferred `SingleSignOnService` binding(s) in priority order (e.g., `"urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"`). The first binding present in the metadata is selected.
+    </ParamField>
+
+    <ParamField path="options[:slo_binding]" type="String | Array<String>">
+      Preferred `SingleLogoutService` binding(s) in priority order. The first binding present in the metadata is selected.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Returns
+
+<ResponseField name="settings" type="OneLogin::RubySaml::Settings">
+  A settings object populated with the following IdP attributes from the metadata:
+
+  - `idp_entity_id`
+  - `name_identifier_format`
+  - `idp_sso_service_url` and `idp_sso_service_binding`
+  - `idp_slo_service_url`, `idp_slo_service_binding`, and `idp_slo_response_service_url`
+  - `idp_attribute_names`
+  - `idp_cert`, `idp_cert_fingerprint`, and `idp_cert_multi`
+  - `valid_until`
+</ResponseField>
+
+---
+
+## `#parse_remote`
+
+```ruby
+parse_remote(url, validate_cert = true, options = {}) → OneLogin::RubySaml::Settings
+```
+
+Fetches IdP metadata from a URL and delegates to `#parse`. Raises `OneLogin::RubySaml::HttpError` if the HTTP request fails.
+
+### Parameters
+
+<ParamField path="url" type="String" required>
+  The HTTP or HTTPS URL of the IdP metadata document. Must begin with `http` or `https`.
+</ParamField>
+
+<ParamField path="validate_cert" type="Boolean" default="true">
+  When `true` and the URL is HTTPS, the server's TLS certificate is verified with `OpenSSL::SSL::VERIFY_PEER`. Set to `false` to disable verification (not recommended in production).
+</ParamField>
+
+<ParamField path="options" type="Hash" default="{}">
+  Same options as `#parse`.
+</ParamField>
+
+### Returns
+
+<ResponseField name="settings" type="OneLogin::RubySaml::Settings">
+  Settings populated from the remote metadata. Same fields as `#parse`.
+</ResponseField>
+
+---
+
+## `#parse_to_hash`
+
+```ruby
+parse_to_hash(idp_metadata, options = {}) → Hash
+```
+
+Parses an IdP metadata XML string and returns the extracted values as a `Hash` instead of a `Settings` object. Useful for passing to libraries such as [omniauth-saml](https://github.com/omniauth/omniauth-saml) that accept a plain hash.
+
+### Parameters
+
+<ParamField path="idp_metadata" type="String" required>
+  The raw XML string of the IdP metadata document.
+</ParamField>
+
+<ParamField path="options" type="Hash" default="{}">
+  Same options as `#parse` (excluding `:settings`).
+</ParamField>
+
+### Returns
+
+<ResponseField name="metadata" type="Hash">
+  Hash with symbol keys mirroring the `Settings` attribute names populated by `#parse` (e.g., `:idp_entity_id`, `:idp_sso_service_url`, `:idp_cert`, etc.).
+</ResponseField>
+
+---
+
+## `#parse_remote_to_hash`
+
+```ruby
+parse_remote_to_hash(url, validate_cert = true, options = {}) → Hash
+```
+
+Fetches IdP metadata from a URL and returns it as a `Hash`. Equivalent to calling `#parse_remote` and then converting the result, but returns a `Hash` directly.
+
+### Parameters
+
+<ParamField path="url" type="String" required>
+  The HTTP or HTTPS URL of the IdP metadata document.
+</ParamField>
+
+<ParamField path="validate_cert" type="Boolean" default="true">
+  TLS certificate validation for HTTPS URLs.
+</ParamField>
+
+<ParamField path="options" type="Hash" default="{}">
+  Same options as `#parse_to_hash`.
+</ParamField>
+
+### Returns
+
+<ResponseField name="metadata" type="Hash">
+  Hash with the same keys as `#parse_to_hash`.
+</ResponseField>
+
+---
+
+## `#parse_to_array` / `#parse_remote_to_array`
+
+```ruby
+parse_to_array(idp_metadata, options = {}) → Array<Hash>
+parse_remote_to_array(url, validate_cert = true, options = {}) → Array<Hash>
+```
+
+Return **all** `<IDPSSODescriptor>` entries found in the metadata as an array of hashes. `#parse_to_hash` and `#parse_remote_to_hash` return only the first element of this array.
+
+---
+
+## Examples
+
+### Load metadata from a URL
+
+```ruby
+def saml_settings
+  idp_metadata_parser = OneLogin::RubySaml::IdpMetadataParser.new
+  settings = idp_metadata_parser.parse_remote(
+    "https://example.com/auth/saml2/idp/metadata"
+  )
+
+  settings.assertion_consumer_service_url = "https://#{request.host}/saml/consume"
+  settings.sp_entity_id                   = "https://#{request.host}/saml/metadata"
+  settings.name_identifier_format         = "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"
+  settings
+end
+```
+
+### Filter by entity ID
+
+When a metadata document contains multiple `<EntityDescriptor>` elements:
+
+```ruby
+settings = idp_metadata_parser.parse_remote(
+  "https://example.com/auth/saml2/idp/metadata",
+  true,
+  entity_id: "http://example.com/target/entity"
+)
+```
+
+### Specify binding and NameID format
+
+```ruby
+options = {
+  entity_id:     "http://example.com/target/entity",
+  name_id_format: "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress",
+  sso_binding:   "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST",
+  slo_binding:   "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"
+}
+settings = idp_metadata_parser.parse_remote(
+  "https://example.com/auth/saml2/idp/metadata",
+  true,
+  options
+)
+```
+
+### Use `parse_to_hash` with omniauth-saml
+
+```ruby
+idp_metadata_parser = OneLogin::RubySaml::IdpMetadataParser.new
+idp_metadata = idp_metadata_parser.parse_remote_to_hash(
+  "https://example.com/auth/saml2/idp/metadata"
+)
+# idp_metadata is a Hash — pass it directly to omniauth-saml provider options
+```
+
+### Parse pre-validated metadata XML
+
+Use `#parse` when you have downloaded and validated the metadata signature yourself:
+
+```ruby
+require "xml_security"
+require "onelogin/ruby-saml/utils"
+require "onelogin/ruby-saml/idp_metadata_parser"
+
+url = "https://example.com/auth/saml2/idp/metadata"
+idp_metadata_parser = OneLogin::RubySaml::IdpMetadataParser.new
+
+uri  = URI.parse(url)
+http = Net::HTTP.new(uri.host, uri.port)
+if uri.scheme == "https"
+  http.use_ssl    = true
+  http.verify_mode = OpenSSL::SSL::VERIFY_PEER
+end
+xml = http.request(Net::HTTP::Get.new(uri.request_uri)).body
+
+errors   = []
+doc      = XMLSecurity::SignedDocument.new(xml, errors)
+cert_str = OneLogin::RubySaml::Utils.format_cert("<your_cert_here>")
+metadata_sign_cert = OpenSSL::X509::Certificate.new(cert_str)
+
+if doc.validate_document_with_cert(metadata_sign_cert, true)
+  settings = idp_metadata_parser.parse(
+    xml,
+    entity_id: "http://example.com/target/entity"
+  )
+else
+  raise "Metadata signature validation failed"
+end
+```
+
+<Tip>
+  HTTP Basic Auth is supported automatically for metadata URLs that include credentials: `https://user:password@example.com/metadata`.
+</Tip>

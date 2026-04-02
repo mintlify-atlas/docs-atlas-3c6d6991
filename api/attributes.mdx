@@ -1,0 +1,203 @@
+---
+title: "Attributes"
+description: "OneLogin::RubySaml::Attributes — access SAML attribute statements."
+---
+
+`OneLogin::RubySaml::Attributes` is a collection class that wraps the parsed `<saml:AttributeStatement>` from a SAML response. It provides key-based and regex-based access to attribute values, with a compatibility mode that controls whether single or multiple values are returned by `#[]` and `#fetch`.
+
+Access the attributes on a validated response via `response.attributes`.
+
+## Class methods
+
+### `Attributes.single_value_compatibility`
+
+```ruby
+Attributes.single_value_compatibility → Boolean
+```
+
+Returns the current value of the backwards-compatibility mode flag. Defaults to `true`.
+
+### `Attributes.single_value_compatibility=`
+
+```ruby
+Attributes.single_value_compatibility = value
+```
+
+Sets the backwards-compatibility mode globally for all `Attributes` instances.
+
+<ParamField path="value" type="Boolean" required>
+  - `true` (default) — `#[]` and `#fetch` return the **first** value as a `String` (or `nil`). Preserves backwards compatibility with applications written against older versions of the gem.
+  - `false` — `#[]` and `#fetch` return **all** values as an `Array` (or `nil` if the key does not exist).
+</ParamField>
+
+<Warning>
+  `single_value_compatibility` is a class-level global. Changing it affects all attribute lookups across your application. Consider calling `#single` or `#multi` explicitly instead of relying on the global mode.
+</Warning>
+
+---
+
+## Instance methods
+
+### `#[](name)`
+
+```ruby
+attributes[name] → String | Array | nil
+```
+
+Retrieves the value(s) for an attribute by name. The return type depends on `single_value_compatibility`:
+
+- When `true`: returns the first value (`String` or `nil`).
+- When `false`: returns all values (`Array` or `nil`).
+
+`name` is normalized by calling `.to_s`, so `'email'` and `:email` produce the same result.
+
+---
+
+### `#single(name)`
+
+```ruby
+single(name) → String | nil
+```
+
+Always returns the **first** value for the attribute, regardless of the `single_value_compatibility` setting. Returns `nil` if the attribute does not exist.
+
+---
+
+### `#multi(name)`
+
+```ruby
+multi(name) → Array | nil
+```
+
+Always returns **all** values for the attribute as an `Array`, regardless of the `single_value_compatibility` setting. Returns `nil` if the attribute does not exist.
+
+---
+
+### `#fetch(name)`
+
+```ruby
+fetch(name) → String | Array | nil
+```
+
+Looks up an attribute by name or by `Regexp`. The return type is controlled by `single_value_compatibility`, identical to `#[]`.
+
+When `name` is a `Regexp`, iterates over all attribute keys and returns the value of the first key that matches the pattern.
+
+Returns `nil` if no match is found.
+
+---
+
+### `#include?(name)`
+
+```ruby
+include?(name) → Boolean
+```
+
+Returns `true` if an attribute with the given name exists in the collection.
+
+---
+
+### `#all`
+
+```ruby
+all → Hash
+```
+
+Returns the underlying raw hash: keys are attribute name strings, values are arrays of values.
+
+---
+
+### `#set(name, values)` / `#[]=(name, values)`
+
+```ruby
+set(name, values)
+attributes[name] = values
+```
+
+Sets the values for an attribute, replacing any existing values. `values` must be an `Array`.
+
+---
+
+### `#add(name, values = [])`
+
+```ruby
+add(name, values = [])
+```
+
+Appends values to an attribute. Creates the attribute if it does not already exist.
+
+---
+
+## Compatibility mode examples
+
+Given the following `<saml:AttributeStatement>`:
+
+```xml
+<saml:AttributeStatement>
+  <saml:Attribute Name="uid">
+    <saml:AttributeValue xsi:type="xs:string">demo</saml:AttributeValue>
+  </saml:Attribute>
+  <saml:Attribute Name="role">
+    <saml:AttributeValue xsi:type="xs:string">role1</saml:AttributeValue>
+    <saml:AttributeValue xsi:type="xs:string">role2</saml:AttributeValue>
+    <saml:AttributeValue xsi:type="xs:string">role3</saml:AttributeValue>
+  </saml:Attribute>
+  <saml:Attribute Name="http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname">
+    <saml:AttributeValue>usersName</saml:AttributeValue>
+  </saml:Attribute>
+</saml:AttributeStatement>
+```
+
+### `single_value_compatibility = true` (default)
+
+```ruby
+OneLogin::RubySaml::Attributes.single_value_compatibility = true
+
+response.attributes[:uid]            # => "demo"
+response.attributes[:role]           # => "role1"
+response.attributes.single(:role)    # => "role1"
+response.attributes.multi(:role)     # => ["role1", "role2", "role3"]
+response.attributes.fetch(:role)     # => "role1"
+response.attributes[:not_exists]     # => nil
+response.attributes.single(:not_exists) # => nil
+response.attributes.multi(:not_exists)  # => nil
+response.attributes.fetch(/givenname/)  # => "usersName"
+```
+
+### `single_value_compatibility = false`
+
+```ruby
+OneLogin::RubySaml::Attributes.single_value_compatibility = false
+
+response.attributes[:uid]            # => ["demo"]
+response.attributes[:role]           # => ["role1", "role2", "role3"]
+response.attributes.single(:role)    # => "role1"
+response.attributes.multi(:role)     # => ["role1", "role2", "role3"]
+response.attributes.fetch(:role)     # => ["role1", "role2", "role3"]
+response.attributes[:not_exists]     # => nil
+response.attributes.single(:not_exists) # => nil
+response.attributes.multi(:not_exists)  # => nil
+response.attributes.fetch(/givenname/)  # => ["usersName"]
+```
+
+<Tip>
+  Prefer calling `#single` or `#multi` explicitly rather than relying on the global `single_value_compatibility` flag. This makes the intended behavior clear at the call site and avoids surprises when the flag is changed elsewhere in your application.
+</Tip>
+
+## Symbol and string key equivalence
+
+Attribute names are normalized to strings internally, so symbol and string keys are interchangeable:
+
+```ruby
+response.attributes['uid']  # => "demo"
+response.attributes[:uid]   # => "demo"
+```
+
+## Regex access via `#fetch`
+
+`#fetch` accepts a `Regexp` to find an attribute by pattern matching against its name:
+
+```ruby
+# Matches "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname"
+response.attributes.fetch(/givenname/)  # => "usersName" (or ["usersName"] in multi mode)
+```

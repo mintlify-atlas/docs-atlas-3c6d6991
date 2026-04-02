@@ -1,0 +1,268 @@
+---
+title: "Single Logout"
+description: "Implement SP-initiated and IdP-initiated SAML Single Logout (SLO)."
+---
+
+## Overview
+
+SAML Single Logout (SLO) allows a user to terminate all sessions established through a single SAML SSO event. Ruby SAML supports both SLO flows:
+
+- **SP-initiated SLO** — your application sends a `LogoutRequest` to the IdP, and then receives and validates the IdP's `LogoutResponse`.
+- **IdP-initiated SLO** — the IdP sends a `LogoutRequest` to your application, and your application replies with a `LogoutResponse`.
+
+Both flows use the `idp_slo_service_url` configured in your settings.
+
+---
+
+## SP-initiated SLO
+
+<Steps>
+  <Step title="Create the LogoutRequest">
+    Instantiate `OneLogin::RubySaml::Logoutrequest`. The object is assigned a unique UUID at creation time. Set `settings.name_identifier_value` to the NameID of the user being logged out (typically stored in the session), then call `#create` to get the redirect URL.
+
+    ```ruby
+    def sp_logout_request
+      settings = saml_settings
+
+      if settings.idp_slo_service_url.nil?
+        logger.info "SLO IdP Endpoint not found, executing normal logout"
+        delete_session
+        return
+      end
+
+      logout_request = OneLogin::RubySaml::Logoutrequest.new
+      logger.info "New SP SLO for userid '#{session[:userid]}' transactionid '#{logout_request.uuid}'"
+
+      settings.name_identifier_value = session[:userid] if settings.name_identifier_value.nil?
+
+      # Log out the user locally before redirecting to the IdP
+      # (recommended by saml2int [SDP-SP34] in case the IdP flow fails)
+      logged_user = session[:userid]
+      delete_session
+
+      # Store the request UUID to correlate it with the LogoutResponse
+      session[:transaction_id]  = logout_request.uuid
+      session[:logged_out_user] = logged_user
+
+      relay_state = url_for(controller: 'saml', action: 'index')
+      redirect_to(logout_request.create(settings, RelayState: relay_state))
+    end
+    ```
+  </Step>
+  <Step title="Receive and validate the LogoutResponse">
+    After the IdP processes the logout, it redirects back to your application with a `SAMLResponse`. Validate it and finalize session cleanup.
+
+    ```ruby
+    def process_logout_response
+      settings = saml_settings
+
+      if session.has_key?(:transaction_id)
+        logout_response = OneLogin::RubySaml::Logoutresponse.new(
+          params[:SAMLResponse],
+          settings,
+          matches_request_id: session[:transaction_id]
+        )
+      else
+        logout_response = OneLogin::RubySaml::Logoutresponse.new(
+          params[:SAMLResponse],
+          settings
+        )
+      end
+
+      logger.info "LogoutResponse is: #{logout_response.to_s}"
+
+      if logout_response.validate
+        logger.info "SLO completed for '#{session[:logged_out_user]}'"
+        delete_session
+      else
+        logger.error "The SAML Logout Response is invalid"
+        # Inspect logout_response.errors for details
+      end
+    end
+    ```
+
+    Pass `:matches_request_id` set to the stored `logout_request.uuid` to verify that the `InResponseTo` attribute of the `LogoutResponse` matches the original `LogoutRequest`. This prevents an IdP from sending a forged or replayed response.
+  </Step>
+</Steps>
+
+---
+
+## IdP-initiated SLO
+
+<Steps>
+  <Step title="Receive and validate the LogoutRequest from the IdP">
+    The IdP sends a `SAMLRequest` to your SLO endpoint. Construct a `OneLogin::RubySaml::SloLogoutrequest` and call `#is_valid?`.
+
+    ```ruby
+    def idp_logout_request
+      settings = saml_settings
+
+      logout_request = OneLogin::RubySaml::SloLogoutrequest.new(
+        params[:SAMLRequest],
+        settings: settings
+      )
+
+      unless logout_request.is_valid?
+        logger.error "IdP initiated LogoutRequest was not valid!"
+        return render inline: logout_request.errors.join(", "), status: :bad_request
+      end
+
+      logger.info "IdP initiated Logout for #{logout_request.name_id}"
+
+      # Terminate the local session
+      delete_session
+
+      # Reply to the IdP with a LogoutResponse
+      logout_request_id = logout_request.id
+      logout_response = OneLogin::RubySaml::SloLogoutresponse.new.create(
+        settings,
+        logout_request_id,
+        nil,
+        RelayState: params[:RelayState]
+      )
+      redirect_to logout_response
+    end
+    ```
+  </Step>
+  <Step title="Build and send the LogoutResponse">
+    `SloLogoutresponse#create` returns a redirect URL containing the `SAMLResponse` query parameter. The response XML automatically includes:
+    - `InResponseTo` set to the request's ID
+    - `StatusCode` of `urn:oasis:names:tc:SAML:2.0:status:Success` (default)
+    - `StatusMessage` of `"Successfully Signed Out"` (default)
+
+    You can override both by passing `logout_message` and `logout_status_code` arguments:
+
+    ```ruby
+    logout_response = OneLogin::RubySaml::SloLogoutresponse.new.create(
+      settings,
+      logout_request_id,
+      "User session terminated",           # logout_message
+      { RelayState: params[:RelayState] },  # params
+      "urn:oasis:names:tc:SAML:2.0:status:Success"  # logout_status_code
+    )
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Unified logout action
+
+You can handle both flows (and the SP-initiated trigger) from a single controller action by inspecting what parameters are present:
+
+```ruby
+def logout
+  # IdP-initiated: incoming LogoutRequest from the IdP
+  if params[:SAMLRequest]
+    return idp_logout_request
+
+  # SP-initiated: incoming LogoutResponse from the IdP
+  elsif params[:SAMLResponse]
+    return process_logout_response
+
+  # No SAML parameters: start SP-initiated SLO
+  else
+    return sp_logout_request
+  end
+end
+```
+
+---
+
+## SLO flows compared
+
+<Tabs>
+  <Tab title="SP-initiated">
+    ```
+    Browser → SP: GET /logout
+    SP → Browser: 302 to IdP SLO URL?SAMLRequest=...
+    Browser → IdP: GET /slo?SAMLRequest=...
+    IdP terminates session
+    IdP → Browser: 302 to SP SLO URL?SAMLResponse=...
+    Browser → SP: GET /logout?SAMLResponse=...
+    SP validates LogoutResponse → session cleared
+    ```
+
+    Key classes:
+    - `OneLogin::RubySaml::Logoutrequest` — builds the outgoing request
+    - `OneLogin::RubySaml::Logoutresponse` — parses and validates the incoming response
+  </Tab>
+  <Tab title="IdP-initiated">
+    ```
+    IdP → Browser: 302 to SP SLO URL?SAMLRequest=...
+    Browser → SP: GET /logout?SAMLRequest=...
+    SP validates LogoutRequest → session cleared
+    SP builds LogoutResponse
+    SP → Browser: 302 to IdP SLO URL?SAMLResponse=...
+    Browser → IdP: GET /slo?SAMLResponse=...
+    ```
+
+    Key classes:
+    - `OneLogin::RubySaml::SloLogoutrequest` — parses and validates the incoming request
+    - `OneLogin::RubySaml::SloLogoutresponse` — builds the outgoing response
+  </Tab>
+</Tabs>
+
+---
+
+## ADFS compatibility (`lowercase_url_encoding`)
+
+Microsoft ADFS URL-encodes SAML query string parameters using lowercase hex escaping (e.g., `%2f` instead of `%2F`). Ruby SAML uses uppercase by default, which causes signature validation to fail against ADFS because the query string used to verify the signature differs from what was signed.
+
+Enable lowercase encoding before processing the SLO request:
+
+```ruby
+def idp_logout_request
+  settings = saml_settings
+  settings.security[:lowercase_url_encoding] = true
+
+  logout_request = OneLogin::RubySaml::SloLogoutrequest.new(
+    params[:SAMLRequest],
+    settings: settings
+  )
+  # ...
+end
+```
+
+---
+
+## Relaxed signature validation
+
+When validating the signature on an HTTP-Redirect binding message, the IdP certificate is required—a fingerprint alone is not sufficient. If no IdP certificate is registered in your settings, signature validation will fail.
+
+Pass `:relax_signature_validation` to accept the message without verifying the signature in that case:
+
+```ruby
+# For LogoutResponse (SP-initiated flow)
+logout_response = OneLogin::RubySaml::Logoutresponse.new(
+  params[:SAMLResponse],
+  settings,
+  relax_signature_validation: true,
+  get_params: request.query_parameters
+)
+
+# For SloLogoutrequest (IdP-initiated flow)
+logout_request = OneLogin::RubySaml::SloLogoutrequest.new(
+  params[:SAMLRequest],
+  settings:                   settings,
+  relax_signature_validation: true,
+  get_params:                 request.query_parameters
+)
+```
+
+<Warning>
+  Using `:relax_signature_validation` in production removes the cryptographic guarantee that the logout message originated from your trusted IdP. Only use it in environments where you have no IdP certificate available and accept the associated risk.
+</Warning>
+
+---
+
+## Session cleanup helper
+
+```ruby
+def delete_session
+  session[:userid]          = nil
+  session[:attributes]      = nil
+  session[:transaction_id]  = nil
+  session[:logged_out_user] = nil
+end
+```

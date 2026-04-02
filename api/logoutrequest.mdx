@@ -1,0 +1,128 @@
+---
+title: "Logoutrequest"
+description: "OneLogin::RubySaml::Logoutrequest — build SP-initiated SAML logout requests."
+---
+
+`OneLogin::RubySaml::Logoutrequest` builds a SAML 2.0 `<LogoutRequest>` message sent from the SP to the IdP to initiate Single Logout (SLO). It inherits from `SamlMessage`.
+
+<Note>
+  This class handles **SP-initiated** SLO. If you need to parse an incoming logout request from the IdP, see [SloLogoutrequest](/api/slo-logoutrequest).
+</Note>
+
+## Constructor
+
+```ruby
+Logoutrequest.new → Logoutrequest
+```
+
+Creates a new logout request and assigns it a random UUID as its `ID` attribute.
+
+```ruby
+logout_request = OneLogin::RubySaml::Logoutrequest.new
+puts logout_request.uuid  # => "_a1b2c3d4-..."
+```
+
+### Attributes
+
+<ResponseField name="uuid" type="String">
+  The unique identifier for this logout request. Assigned on initialization via `OneLogin::RubySaml::Utils.uuid`. Also accessible as `#request_id`.
+</ResponseField>
+
+---
+
+## `#create`
+
+```ruby
+create(settings, params = {}) → String
+```
+
+Builds and returns the full redirect URL for the SP-initiated logout request. The returned URL includes the `SAMLRequest` parameter and any additional params (e.g., `RelayState`, `Signature`).
+
+Raises `OneLogin::RubySaml::SettingError` if `settings.idp_slo_service_url` is nil or empty.
+
+### Parameters
+
+<ParamField path="settings" type="OneLogin::RubySaml::Settings" required>
+  The toolkit settings object. Must have `idp_slo_service_url` configured.
+</ParamField>
+
+<ParamField path="params" type="Hash" default="{}">
+  Extra GET parameters to include in the redirect URL.
+
+  <Expandable title="params keys">
+    <ParamField path="params[:RelayState]" type="String">
+      An opaque value the IdP will return unchanged in its response. Typically the URL to redirect to after logout completes. Also accepted as `params['RelayState']`.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Returns
+
+<ResponseField name="url" type="String">
+  The complete redirect URL, e.g. `https://idp.example.com/slo?SAMLRequest=...&RelayState=...&SigAlg=...&Signature=...`
+</ResponseField>
+
+---
+
+## `#create_params`
+
+```ruby
+create_params(settings, params = {}) → Hash
+```
+
+Returns the raw GET parameter hash that `#create` uses to build its URL. Useful when you need the individual parameters (e.g., for POST binding or custom redirect logic).
+
+When `settings.security[:logout_requests_signed]` is `true` and the binding is HTTP-Redirect, the hash will include `SigAlg` and `Signature` entries computed with the SP signing key.
+
+### Parameters
+
+<ParamField path="settings" type="OneLogin::RubySaml::Settings" required>
+  The toolkit settings object.
+</ParamField>
+
+<ParamField path="params" type="Hash" default="{}">
+  Extra parameters, including optional `RelayState`.
+</ParamField>
+
+### Returns
+
+<ResponseField name="params" type="Hash">
+  Hash containing at minimum `"SAMLRequest"` (base64-encoded, deflated XML). May also include `"RelayState"`, `"SigAlg"`, and `"Signature"` when request signing is enabled.
+</ResponseField>
+
+---
+
+## SP-initiated SLO example
+
+The following example is a complete controller-style handler drawn from the README:
+
+```ruby
+def sp_logout_request
+  settings = saml_settings
+
+  if settings.idp_slo_service_url.nil?
+    logger.info "SLO IdP Endpoint not found, executing normal logout"
+    delete_session
+  else
+    logout_request = OneLogin::RubySaml::Logoutrequest.new
+    logger.info "New SP SLO for userid '#{session[:userid]}' transactionid '#{logout_request.uuid}'"
+
+    settings.name_identifier_value ||= session[:userid]
+
+    # Log the user out locally before redirecting to IdP (recommended by saml2int SDP-SP34)
+    logged_user = session[:userid]
+    delete_session
+
+    # Persist the transaction ID to match against the IdP's LogoutResponse
+    session[:transaction_id] = logout_request.uuid
+    session[:logged_out_user] = logged_user
+
+    relay_state = url_for(controller: 'saml', action: 'index')
+    redirect_to(logout_request.create(settings, :RelayState => relay_state))
+  end
+end
+```
+
+<Tip>
+  Save `logout_request.uuid` in the session before redirecting. Pass it as `matches_request_id` when constructing the [Logoutresponse](/api/logoutresponse) to ensure the IdP's reply corresponds to this specific request.
+</Tip>

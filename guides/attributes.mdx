@@ -1,0 +1,259 @@
+---
+title: "User Attributes"
+description: "Read SAML attribute statements from authentication responses."
+---
+
+## What `response.attributes` returns
+
+After a successful `SAMLResponse` is validated, `response.attributes` returns a `OneLogin::RubySaml::Attributes` object. It is populated from every `<saml:AttributeStatement>` in the assertion, keyed by the `Name` attribute of each `<saml:Attribute>` element.
+
+```ruby
+response = OneLogin::RubySaml::Response.new(params[:SAMLResponse])
+response.settings = saml_settings
+
+response.attributes[:username]
+```
+
+The `Attributes` class includes `Enumerable`, so you can iterate over all attributes:
+
+```ruby
+response.attributes.each do |name, values|
+  puts "#{name}: #{values.inspect}"
+end
+```
+
+---
+
+## Example AttributeStatement
+
+Given this `<saml:AttributeStatement>` in the assertion:
+
+```xml
+<saml:AttributeStatement>
+  <saml:Attribute Name="uid">
+    <saml:AttributeValue xsi:type="xs:string">demo</saml:AttributeValue>
+  </saml:Attribute>
+  <saml:Attribute Name="another_value">
+    <saml:AttributeValue xsi:type="xs:string">value1</saml:AttributeValue>
+    <saml:AttributeValue xsi:type="xs:string">value2</saml:AttributeValue>
+  </saml:Attribute>
+  <saml:Attribute Name="role">
+    <saml:AttributeValue xsi:type="xs:string">role1</saml:AttributeValue>
+  </saml:Attribute>
+  <saml:Attribute Name="role">
+    <saml:AttributeValue xsi:type="xs:string">role2</saml:AttributeValue>
+    <saml:AttributeValue xsi:type="xs:string">role3</saml:AttributeValue>
+  </saml:Attribute>
+  <saml:Attribute Name="attribute_with_nil_value">
+    <saml:AttributeValue xsi:nil="true"/>
+  </saml:Attribute>
+  <saml:Attribute Name="attribute_with_nils_and_empty_strings">
+    <saml:AttributeValue/>
+    <saml:AttributeValue>valuePresent</saml:AttributeValue>
+    <saml:AttributeValue xsi:nil="true"/>
+    <saml:AttributeValue xsi:nil="1"/>
+  </saml:Attribute>
+  <saml:Attribute Name="http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname">
+    <saml:AttributeValue>usersName</saml:AttributeValue>
+  </saml:Attribute>
+</saml:AttributeStatement>
+```
+
+The parsed `Attributes` object contains:
+
+```ruby
+pp(response.attributes)
+# => @attributes=
+#   {"uid"=>["demo"],
+#    "another_value"=>["value1", "value2"],
+#    "role"=>["role1", "role2", "role3"],
+#    "attribute_with_nil_value"=>[nil],
+#    "attribute_with_nils_and_empty_strings"=>["", "valuePresent", nil, nil],
+#    "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname"=>["usersName"]}>
+```
+
+Multiple `<saml:Attribute>` elements sharing the same `Name` (like `role` above) have their values merged into a single array.
+
+---
+
+## `single_value_compatibility` mode
+
+The `Attributes` class has a class-level flag `single_value_compatibility` that controls the return type of the `#[]` and `#fetch` operators. It defaults to `true` for backward compatibility.
+
+<Tabs>
+  <Tab title="single_value_compatibility = true (default)">
+    `attributes[:name]` and `attributes.fetch(:name)` return the **first value** as a scalar.
+
+    ```ruby
+    OneLogin::RubySaml::Attributes.single_value_compatibility = true
+
+    response.attributes[:uid]
+    # => "demo"
+
+    response.attributes[:role]
+    # => "role1"
+
+    response.attributes[:attribute_with_nil_value]
+    # => nil
+
+    response.attributes[:attribute_with_nils_and_empty_strings]
+    # => ""
+
+    response.attributes[:not_exists]
+    # => nil
+
+    response.attributes.fetch(/givenname/)
+    # => "usersName"
+    ```
+  </Tab>
+  <Tab title="single_value_compatibility = false">
+    `attributes[:name]` and `attributes.fetch(:name)` return **all values** as an Array.
+
+    ```ruby
+    OneLogin::RubySaml::Attributes.single_value_compatibility = false
+
+    response.attributes[:uid]
+    # => ["demo"]
+
+    response.attributes[:role]
+    # => ["role1", "role2", "role3"]
+
+    response.attributes[:attribute_with_nil_value]
+    # => [nil]
+
+    response.attributes[:attribute_with_nils_and_empty_strings]
+    # => ["", "valuePresent", nil, nil]
+
+    response.attributes[:not_exists]
+    # => nil
+
+    response.attributes.fetch(/givenname/)
+    # => ["usersName"]
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  `single_value_compatibility` is a class-level setting that affects all `Attributes` instances in the process. Set it once during application initialization.
+</Note>
+
+---
+
+## Attribute access methods
+
+The following methods are available regardless of the `single_value_compatibility` setting:
+
+<AccordionGroup>
+  <Accordion title="#single(name) — always returns the first value">
+    Returns the first value of the attribute as a scalar string (or `nil`), regardless of `single_value_compatibility`:
+
+    ```ruby
+    response.attributes.single(:role)
+    # => "role1"
+
+    response.attributes.single(:not_exists)
+    # => nil
+    ```
+  </Accordion>
+  <Accordion title="#multi(name) — always returns all values">
+    Returns the full array of values for the attribute (or `nil` if not present), regardless of `single_value_compatibility`:
+
+    ```ruby
+    response.attributes.multi(:role)
+    # => ["role1", "role2", "role3"]
+
+    response.attributes.multi(:not_exists)
+    # => nil
+    ```
+  </Accordion>
+  <Accordion title="#fetch(name_or_regex) — supports regex matching">
+    Looks up an attribute by exact name or by a `Regexp`. The return type follows `single_value_compatibility`.
+
+    ```ruby
+    # Exact name match
+    response.attributes.fetch(:role)
+    # => "role1"  (when single_value_compatibility = true)
+    # => ["role1", "role2", "role3"]  (when single_value_compatibility = false)
+
+    # Regex match — useful for URI-style attribute names
+    response.attributes.fetch(/givenname/)
+    # => "usersName"  (when single_value_compatibility = true)
+    # => ["usersName"]  (when single_value_compatibility = false)
+    ```
+  </Accordion>
+  <Accordion title="#include?(name) — test for attribute presence">
+    ```ruby
+    response.attributes.include?(:role)
+    # => true
+
+    response.attributes.include?(:not_exists)
+    # => false
+    ```
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Requesting attributes from the IdP
+
+To declare the attributes your SP requires, configure an `AttributeConsumingService` in your settings. The IdP uses this declaration (published in your SP metadata) to know which attributes to include in the assertion.
+
+### Configure `attribute_consuming_service`
+
+```ruby
+settings = OneLogin::RubySaml::Settings.new
+
+# Index that appears in the AuthnRequest AttributeConsumingServiceIndex attribute
+settings.attributes_index = 5
+
+settings.attribute_consuming_service.configure do
+  service_name  "Service"
+  service_index 5
+
+  add_attribute(
+    name:          "Name",
+    name_format:   "Name Format",
+    friendly_name: "Friendly Name"
+  )
+
+  add_attribute(
+    name:            "Another Attribute",
+    name_format:     "Name Format",
+    friendly_name:   "Friendly Name",
+    attribute_value: "Attribute Value"
+  )
+end
+```
+
+`attribute_value` accepts either a single string or an array of permitted values.
+
+### How `attributes_index` is used
+
+When `settings.attributes_index` is set, the generated `AuthnRequest` XML includes an `AttributeConsumingServiceIndex` attribute referencing the declared service by its index:
+
+```xml
+<samlp:AuthnRequest
+  ...
+  AttributeConsumingServiceIndex="5"
+  ...>
+```
+
+The IdP matches this index to the `<md:AttributeConsumingService>` element in your SP metadata to determine which attributes to return.
+
+### SP metadata output
+
+With the above configuration, your SP metadata will include an element similar to:
+
+```xml
+<md:AttributeConsumingService index="5">
+  <md:ServiceName xml:lang="en">Service</md:ServiceName>
+  <md:RequestedAttribute Name="Name"
+    NameFormat="Name Format"
+    FriendlyName="Friendly Name"/>
+  <md:RequestedAttribute Name="Another Attribute"
+    NameFormat="Name Format"
+    FriendlyName="Friendly Name">
+    <saml:AttributeValue>Attribute Value</saml:AttributeValue>
+  </md:RequestedAttribute>
+</md:AttributeConsumingService>
+```

@@ -1,0 +1,230 @@
+---
+title: "SloLogoutrequest"
+description: "OneLogin::RubySaml::SloLogoutrequest — parse IdP-initiated logout requests."
+---
+
+`OneLogin::RubySaml::SloLogoutrequest` decodes and validates a SAML 2.0 `<LogoutRequest>` sent by the IdP to the SP as part of an IdP-initiated Single Logout flow. It inherits from `SamlMessage` and includes `ErrorHandling`.
+
+<Note>
+  This class handles **IdP-initiated** SLO. If you need to build an SP-initiated logout request to send to the IdP, see [Logoutrequest](/api/logoutrequest).
+</Note>
+
+## Constructor
+
+```ruby
+SloLogoutrequest.new(request, options = {}) → SloLogoutrequest
+```
+
+Decodes and parses an incoming `SAMLRequest` from the IdP.
+
+Raises `ArgumentError` if `request` is `nil`.
+
+### Parameters
+
+<ParamField path="request" type="String" required>
+  The UU-encoded (base64, typically also deflated) `SAMLRequest` string received from the IdP, typically from `params[:SAMLRequest]`.
+</ParamField>
+
+<ParamField path="options" type="Hash" default="{}">
+  Options for parsing and validation.
+
+  <Expandable title="options keys">
+    <ParamField path="options[:settings]" type="OneLogin::RubySaml::Settings">
+      The toolkit settings object. Required for issuer and signature validation. Also controls `soft` mode via `settings.soft`.
+    </ParamField>
+
+    <ParamField path="options[:get_params]" type="Hash">
+      Parsed GET parameters from the IdP redirect, including `'SAMLRequest'`, `'SigAlg'`, and `'Signature'`. Required for HTTP-Redirect binding signature validation.
+    </ParamField>
+
+    <ParamField path="options[:raw_get_params]" type="Hash">
+      URI-encoded GET parameters exactly as received (preserving original percent-encoding). Used to reconstruct the canonical query string for signature verification. Generated automatically from `:get_params` if omitted.
+    </ParamField>
+
+    <ParamField path="options[:allowed_clock_drift]" type="Float">
+      Number of seconds of clock drift to tolerate when validating the `NotOnOrAfter` attribute. Defaults to `0`.
+    </ParamField>
+
+    <ParamField path="options[:relax_signature_validation]" type="Boolean">
+      When `true`, signature validation is skipped if no IdP certificate is registered in settings.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Attributes
+
+<ResponseField name="settings" type="OneLogin::RubySaml::Settings | nil">
+  The settings object extracted from `options[:settings]`.
+</ResponseField>
+
+<ResponseField name="request" type="String">
+  The decoded XML logout request string.
+</ResponseField>
+
+<ResponseField name="document" type="REXML::Document">
+  The parsed XML document.
+</ResponseField>
+
+<ResponseField name="options" type="Hash">
+  The full options hash provided at initialization.
+</ResponseField>
+
+<ResponseField name="soft" type="Boolean">
+  When `true`, validation failures populate `#errors` rather than raising `ValidationError`. Defaults to `true`.
+</ResponseField>
+
+---
+
+## `#is_valid?`
+
+```ruby
+is_valid?(collect_errors = false) → Boolean
+```
+
+Validates the logout request and returns `true` if all checks pass.
+
+The following validations are performed in order:
+
+1. **State** — request is not blank.
+2. **ID** — `ID` attribute is present.
+3. **Version** — SAML version is `2.0`.
+4. **Schema** — XML conforms to `saml-schema-protocol-2.0.xsd`.
+5. **NotOnOrAfter** — current time is before the expiry (respects `allowed_clock_drift`).
+6. **Issuer** — if settings and `idp_entity_id` are provided, the issuer must match.
+7. **Signature** — if `options[:get_params]` contains a `Signature`, it is verified against the IdP certificate(s).
+
+### Parameters
+
+<ParamField path="collect_errors" type="Boolean" default="false">
+  When `true`, validation continues past the first failure and all errors are collected into `#errors`.
+</ParamField>
+
+### Returns
+
+<ResponseField name="valid" type="Boolean">
+  `true` if all validations pass, `false` otherwise.
+</ResponseField>
+
+---
+
+## `#name_id`
+
+```ruby
+name_id → String | nil
+```
+
+Returns the `NameID` value from the `<LogoutRequest>`. If the element is an `<EncryptedID>`, it is decrypted using the SP private key from settings before the value is returned.
+
+Also accessible as `#nameid` (alias).
+
+---
+
+## `#name_id_format`
+
+```ruby
+name_id_format → String | nil
+```
+
+Returns the `Format` attribute of the `<saml:NameID>` element, e.g. `"urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"`.
+
+Also accessible as `#nameid_format` (alias).
+
+---
+
+## `#id`
+
+```ruby
+id → String | nil
+```
+
+Returns the `ID` attribute of the `<LogoutRequest>` element. Pass this value as `request_id` to [SloLogoutresponse#create](/api/slo-logoutresponse) so the response correctly sets `InResponseTo`.
+
+Also accessible as `#request_id`.
+
+---
+
+## `#issuer`
+
+```ruby
+issuer → String | nil
+```
+
+Returns the entity ID from `<saml:Issuer>` inside the logout request.
+
+---
+
+## `#not_on_or_after`
+
+```ruby
+not_on_or_after → Time | nil
+```
+
+Returns the parsed `NotOnOrAfter` attribute value as a `Time` object (UTC), or `nil` if the attribute is absent.
+
+---
+
+## `#session_indexes`
+
+```ruby
+session_indexes → Array<String>
+```
+
+Returns an array of `<samlp:SessionIndex>` values from the request. Returns an empty array if none are present.
+
+---
+
+## `#errors`
+
+```ruby
+errors → Array<String>
+```
+
+Returns the list of validation error messages accumulated by `#is_valid?`. Empty when the request is valid.
+
+---
+
+## IdP-initiated SLO example
+
+```ruby
+# Handle an IdP-initiated logout request.
+def idp_logout_request
+  settings = Account.get_saml_settings
+
+  # ADFS sends URL-encoded SAML data in lowercase. Set this for ADFS compatibility
+  # on signature verification (see the lowercase_url_encoding note below).
+  settings.security[:lowercase_url_encoding] = true
+
+  logout_request = OneLogin::RubySaml::SloLogoutrequest.new(
+    params[:SAMLRequest],
+    settings:   settings,
+    get_params: params
+  )
+
+  unless logout_request.is_valid?
+    logger.error "IdP initiated LogoutRequest was not valid: #{logout_request.errors.join(', ')}"
+    return render plain: "Invalid logout request", status: :bad_request
+  end
+
+  logger.info "IdP initiated logout for #{logout_request.name_id}"
+
+  # Destroy the local session
+  delete_session
+
+  # Build and send the LogoutResponse back to the IdP
+  logout_response = OneLogin::RubySaml::SloLogoutresponse.new.create(
+    settings,
+    logout_request.id,   # InResponseTo
+    nil,
+    :RelayState => params[:RelayState]
+  )
+  redirect_to logout_response
+end
+```
+
+<Warning>
+  **ADFS compatibility:** Microsoft ADFS percent-encodes query string characters in lowercase (e.g. `%2b` instead of `%2B`). Set `settings.security[:lowercase_url_encoding] = true` to normalize encoding before signature verification. Without this, signature checks will fail against ADFS.
+</Warning>
+
+<Tip>
+  Always pass `get_params: params` when processing HTTP-Redirect binding requests so that the signature on the incoming request can be verified.
+</Tip>

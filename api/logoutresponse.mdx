@@ -1,0 +1,178 @@
+---
+title: "Logoutresponse"
+description: "OneLogin::RubySaml::Logoutresponse — validate IdP logout responses."
+---
+
+`OneLogin::RubySaml::Logoutresponse` parses and validates the SAML 2.0 `<LogoutResponse>` sent by the IdP back to the SP after an SP-initiated logout request. It inherits from `SamlMessage` and includes `ErrorHandling`.
+
+<Note>
+  This class handles the **IdP's reply** to an SP logout request. To build an SP-initiated logout request, see [Logoutrequest](/api/logoutrequest). To build the SP's response to an IdP-initiated logout, see [SloLogoutresponse](/api/slo-logoutresponse).
+</Note>
+
+## Constructor
+
+```ruby
+Logoutresponse.new(response, settings = nil, options = {}) → Logoutresponse
+```
+
+Decodes and parses a raw `SAMLResponse` string from the IdP.
+
+Raises `ArgumentError` if `response` is `nil`.
+
+### Parameters
+
+<ParamField path="response" type="String" required>
+  The UU-encoded (base64) logout response string, typically from `params[:SAMLResponse]`.
+</ParamField>
+
+<ParamField path="settings" type="OneLogin::RubySaml::Settings">
+  Toolkit settings. Required for validation. When `nil`, soft mode defaults to `true`.
+</ParamField>
+
+<ParamField path="options" type="Hash" default="{}">
+  Additional options controlling validation behavior.
+
+  <Expandable title="options keys">
+    <ParamField path="options[:matches_request_id]" type="String">
+      When provided, `#validate` checks that the response's `InResponseTo` attribute matches this value. Use the `uuid` from the original [Logoutrequest](/api/logoutrequest) to guard against response substitution.
+    </ParamField>
+
+    <ParamField path="options[:get_params]" type="Hash">
+      Parsed GET parameters from the IdP redirect, including `'SAMLResponse'`, `'SigAlg'`, and `'Signature'`. Required for HTTP-Redirect binding signature validation.
+    </ParamField>
+
+    <ParamField path="options[:raw_get_params]" type="Hash">
+      URI-encoded GET parameters exactly as received from the IdP (preserving original percent-encoding). Used to reconstruct the canonical query string for signature verification. Generated automatically from `:get_params` if omitted.
+    </ParamField>
+
+    <ParamField path="options[:relax_signature_validation]" type="Boolean">
+      When `true`, signature validation is skipped if no IdP certificate is registered in settings. Useful in development or when the IdP does not sign logout responses.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Attributes
+
+<ResponseField name="settings" type="OneLogin::RubySaml::Settings">
+  The settings object provided at initialization.
+</ResponseField>
+
+<ResponseField name="response" type="String">
+  The decoded XML logout response string.
+</ResponseField>
+
+<ResponseField name="document" type="XMLSecurity::SignedDocument">
+  The parsed XML document.
+</ResponseField>
+
+<ResponseField name="options" type="Hash">
+  The options hash provided at initialization.
+</ResponseField>
+
+<ResponseField name="soft" type="Boolean">
+  When `true`, validation failures populate `#errors` instead of raising `ValidationError`. Defaults to `true` unless `settings.soft` is explicitly set to `false`.
+</ResponseField>
+
+---
+
+## `#validate`
+
+```ruby
+validate(collect_errors = false) → Boolean
+```
+
+Runs all validations against the logout response and returns `true` if the response is valid. When `soft` is `false`, raises `OneLogin::RubySaml::ValidationError` on the first failure.
+
+The following validations are performed in order:
+
+1. **State** — response is not blank; settings, `sp_entity_id`, and IdP cert/fingerprint are present.
+2. **Success status** — `StatusCode` is `urn:oasis:names:tc:SAML:2.0:status:Success`.
+3. **Schema** — XML conforms to `saml-schema-protocol-2.0.xsd`.
+4. **InResponseTo** — if `options[:matches_request_id]` is set, `InResponseTo` must match.
+5. **Issuer** — issuer matches `settings.idp_entity_id`.
+6. **Signature** — if `options[:get_params]` contains a `Signature`, it is verified against the IdP certificate(s).
+
+### Parameters
+
+<ParamField path="collect_errors" type="Boolean" default="false">
+  When `true`, validation continues past the first failure and all errors are collected into `#errors`. When `false`, validation stops at the first failure.
+</ParamField>
+
+### Returns
+
+<ResponseField name="valid" type="Boolean">
+  `true` if all validations pass, `false` otherwise (in soft mode).
+</ResponseField>
+
+---
+
+## `#errors`
+
+```ruby
+errors → Array<String>
+```
+
+Returns the list of validation error messages accumulated by `#validate`. Empty when the response is valid.
+
+---
+
+## Reader methods
+
+<ResponseField name="response_id" type="String">
+  The `ID` attribute of the `<LogoutResponse>` element.
+</ResponseField>
+
+<ResponseField name="in_response_to" type="String | nil">
+  The `InResponseTo` attribute, referencing the original `<LogoutRequest>` ID.
+</ResponseField>
+
+<ResponseField name="issuer" type="String | nil">
+  The entity ID of the issuer extracted from `<saml:Issuer>`.
+</ResponseField>
+
+<ResponseField name="status_code" type="String | nil">
+  The `Value` attribute of `<samlp:StatusCode>`, e.g. `"urn:oasis:names:tc:SAML:2.0:status:Success"`.
+</ResponseField>
+
+<ResponseField name="success?" type="Boolean">
+  Returns `true` when `status_code` equals `urn:oasis:names:tc:SAML:2.0:status:Success`.
+</ResponseField>
+
+---
+
+## SP-initiated SLO: processing the IdP response
+
+```ruby
+# After sending an SP-initiated LogoutRequest to the IdP, process the LogoutResponse.
+def process_logout_response
+  settings = Account.get_saml_settings
+
+  logout_response = if session.key?(:transaction_id)
+    OneLogin::RubySaml::Logoutresponse.new(
+      params[:SAMLResponse],
+      settings,
+      :matches_request_id => session[:transaction_id],
+      :get_params          => params
+    )
+  else
+    OneLogin::RubySaml::Logoutresponse.new(params[:SAMLResponse], settings)
+  end
+
+  logger.info "LogoutResponse is: #{logout_response.response}"
+
+  if logout_response.validate
+    logger.info "SLO completed for '#{session[:logged_out_user]}'"
+    delete_session
+  else
+    logger.error "The SAML Logout Response is invalid: #{logout_response.errors.join(', ')}"
+  end
+end
+```
+
+<Warning>
+  Always pass `matches_request_id` when you have a stored transaction ID. Without it, an attacker could substitute a valid logout response from a different session.
+</Warning>
+
+<Tip>
+  Pass `:get_params => params` (and optionally `:raw_get_params`) to enable signature verification for HTTP-Redirect binding responses. Without these, signatures are not checked.
+</Tip>

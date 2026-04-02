@@ -1,0 +1,253 @@
+---
+title: "Signing and Encryption"
+description: "Sign SP requests, decrypt encrypted assertions, and verify IdP signatures."
+---
+
+## Overview
+
+Ruby SAML supports four cryptographic functions:
+
+1. Signing your SP metadata XML
+2. Signing SP SAML messages (AuthnRequest, LogoutRequest, LogoutResponse)
+3. Decrypting `EncryptedAssertion` elements received from the IdP
+4. Verifying signatures on SAML messages and IdP assertions
+
+Functions 1–3 require a SP certificate and private key. Function 4 is configured through the IdP certificate or fingerprint settings.
+
+---
+
+## Setting up SP certificate and private key
+
+<Steps>
+  <Step title="Provide the certificate and private key">
+    Set `settings.certificate` and `settings.private_key` with PEM-formatted strings including the `BEGIN`/`END` header and footer lines:
+
+    ```ruby
+    settings.certificate = "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"
+    settings.private_key = "-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
+    ```
+
+    The same certificate and key are used for signing requests and decrypting assertions unless you use `sp_cert_multi` (described below).
+  </Step>
+  <Step title="Set digest and signature methods (optional)">
+    The defaults are SHA1-based. For stronger security, upgrade to SHA256:
+
+    ```ruby
+    settings.security[:digest_method]    = XMLSecurity::Document::SHA256
+    settings.security[:signature_method] = XMLSecurity::Document::RSA_SHA256
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Signing SP metadata
+
+Add a `<ds:Signature>` element to your published SP metadata XML:
+
+```ruby
+settings.certificate = "CERTIFICATE TEXT WITH BEGIN/END HEADER AND FOOTER"
+settings.private_key = "PRIVATE KEY TEXT WITH BEGIN/END HEADER AND FOOTER"
+
+settings.security[:metadata_signed] = true
+```
+
+The `OneLogin::RubySaml::Metadata` class reads this flag and embeds the signature when generating the metadata XML.
+
+---
+
+## Signing SP SAML messages
+
+Enable signing for each message type individually. Ruby SAML will attach the signature automatically for both HTTP-Redirect and HTTP-POST bindings.
+
+```ruby
+settings.certificate = "CERTIFICATE TEXT WITH BEGIN/END HEADER AND FOOTER"
+settings.private_key = "PRIVATE KEY TEXT WITH BEGIN/END HEADER AND FOOTER"
+
+settings.security[:authn_requests_signed]   = true  # Sign AuthnRequests
+settings.security[:logout_requests_signed]  = true  # Sign LogoutRequests
+settings.security[:logout_responses_signed] = true  # Sign LogoutResponses
+```
+
+<Note>
+  For HTTP-Redirect binding, the signature covers the raw query string including the `RelayState` parameter. If you send a `RelayState` in a redirect binding request, it must be included consistently — omitting it will cause the IdP's signature verification to fail.
+</Note>
+
+Setting these flags also adds a `<md:KeyDescriptor use="signing">` element to your SP metadata, allowing the IdP to retrieve the certificate it needs to verify incoming signatures.
+
+---
+
+## Decrypting EncryptedAssertion
+
+When the IdP encrypts the assertion using your SP's public key, set `want_assertions_encrypted` to declare this requirement in your SP metadata:
+
+```ruby
+settings.certificate = "CERTIFICATE TEXT WITH BEGIN/END HEADER AND FOOTER"
+settings.private_key = "PRIVATE KEY TEXT WITH BEGIN/END HEADER AND FOOTER"
+
+settings.security[:want_assertions_encrypted] = true
+```
+
+This adds `<md:KeyDescriptor use="encryption">` to your SP metadata. The IdP uses the published certificate to encrypt the assertion; Ruby SAML uses the matching private key to decrypt it.
+
+<Warning>
+  When `want_assertions_encrypted` is `true`, responses that contain an unencrypted assertion are treated as invalid. Make sure your IdP is configured to encrypt before enabling this in production.
+</Warning>
+
+<Warning>
+  If the `SAMLResponse` contains an `EncryptedAssertion`, you must provide `:settings` in the `Response` constructor. The private key is required at parse time to decrypt the assertion.
+
+  ```ruby
+  # Correct: settings provided at initialization for encrypted assertions
+  response = OneLogin::RubySaml::Response.new(params[:SAMLResponse], settings: saml_settings)
+  ```
+</Warning>
+
+---
+
+## Requiring the IdP to sign assertions
+
+To mandate that the IdP signs its assertions (adds `WantAssertionsSigned="true"` to your SP metadata):
+
+```ruby
+settings.security[:want_assertions_signed] = true
+```
+
+The signature is verified against the `<md:KeyDescriptor use="signing">` certificate(s) in the IdP's metadata.
+
+---
+
+## Certificate expiration checks
+
+By default, Ruby SAML does not check whether certificates have expired. Enable expiration checks explicitly:
+
+```ruby
+settings.security[:check_idp_cert_expiration] = true  # Raise if IdP cert is expired
+settings.security[:check_sp_cert_expiration]  = true  # Raise if SP cert is expired
+```
+
+When `check_sp_cert_expiration` is `true`:
+
+- Only non-expired SP certificates are used for signing. If all SP certificates are expired, a `OneLogin::RubySaml::ValidationError` is raised.
+- If `sp_cert_multi` is set, expired certificates are excluded from the generated SP metadata XML, preventing IdP validation errors when it reads your metadata.
+
+---
+
+## Soft mode
+
+By default, `settings.soft = true`, meaning validation failures return `false` (via `is_valid?`) and populate `errors` rather than raising exceptions. To raise `OneLogin::RubySaml::ValidationError` on failure instead:
+
+```ruby
+settings.soft = false
+```
+
+---
+
+## SP certificate multi (`sp_cert_multi`)
+
+`sp_cert_multi` replaces `certificate` and `private_key` for advanced scenarios. You cannot set both at the same time.
+
+### Key rollover
+
+To rotate certificates without service interruption, add the new certificate to the bottom of the list. The IdP should accept signatures from any listed `:signing` certificate. Once all IdPs have consumed the updated SP metadata, remove the old certificate from the top of the list.
+
+```ruby
+settings.sp_cert_multi = {
+  signing: [
+    { certificate: old_cert,  private_key: old_key  },
+    { certificate: new_cert,  private_key: new_key  }
+  ],
+  encryption: [
+    { certificate: old_cert,  private_key: old_key  },
+    { certificate: new_cert,  private_key: new_key  }
+  ]
+}
+```
+
+When signing, Ruby SAML uses the **first** entry in `sp_cert_multi[:signing]` (or the first non-expired entry when `check_sp_cert_expiration` is `true`). When decrypting, it tries each private key in `sp_cert_multi[:encryption]` until one succeeds.
+
+### Separate signing and encryption certificates
+
+```ruby
+settings.sp_cert_multi = {
+  signing: [
+    { certificate: signing_cert, private_key: signing_key }
+  ],
+  encryption: [
+    { certificate: encryption_cert, private_key: encryption_key }
+  ]
+}
+```
+
+<Note>
+  You can reuse the same certificate and/or private key in multiple slots, including across both `:signing` and `:encryption`.
+</Note>
+
+---
+
+## Audience validation
+
+Ruby SAML validates that the `<AudienceRestriction>` element in the assertion contains an `<Audience>` value matching `settings.sp_entity_id`. This check is enabled by default whenever `sp_entity_id` is set.
+
+You can skip audience validation per-response:
+
+```ruby
+response = OneLogin::RubySaml::Response.new(params[:SAMLResponse], skip_audience: true)
+```
+
+### Strict audience validation
+
+By default, a response whose `<AudienceRestriction>` contains only empty `<Audience>` elements is considered valid. To reject such responses:
+
+```ruby
+settings.security[:strict_audience_validation] = true
+```
+
+With this setting, an assertion like the following is **invalid**:
+
+```xml
+<AudienceRestriction>
+  <Audience />
+</AudienceRestriction>
+```
+
+<Warning>
+  Enabling `strict_audience_validation` can cause failures with some IdPs that emit empty audience elements. Test against your IdP before enabling in production.
+</Warning>
+
+---
+
+## Security settings reference
+
+```ruby
+settings.security = {
+  # SP message signing
+  authn_requests_signed:   true,
+  logout_requests_signed:  true,
+  logout_responses_signed: true,
+
+  # SP metadata
+  metadata_signed:         true,
+
+  # IdP assertion requirements
+  want_assertions_signed:    true,
+  want_assertions_encrypted: true,
+
+  # Algorithms
+  digest_method:    XMLSecurity::Document::SHA256,
+  signature_method: XMLSecurity::Document::RSA_SHA256,
+
+  # Certificate expiration
+  check_idp_cert_expiration: true,
+  check_sp_cert_expiration:  true,
+
+  # Audience
+  strict_audience_validation: true,
+
+  # Error behavior
+  soft: true,
+
+  # ADFS compatibility
+  lowercase_url_encoding: false
+}
+```

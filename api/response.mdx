@@ -1,0 +1,334 @@
+---
+title: "Response"
+description: "OneLogin::RubySaml::Response — parse and validate SAML authentication responses."
+---
+
+`OneLogin::RubySaml::Response` parses the base64-encoded `SAMLResponse` POST parameter, decrypts any `EncryptedAssertion`, and runs a full validation pipeline against your `Settings`.
+
+## Constructor
+
+```ruby
+OneLogin::RubySaml::Response.new(response, options = {})
+```
+
+<ParamField body="response" type="String" required>
+  The raw `SAMLResponse` value received from the IdP — either a base64-encoded string (as posted by the browser) or the already-decoded XML string. Raises `ArgumentError` if `nil`.
+</ParamField>
+
+<ParamField body="options" type="Hash" default="{}">
+  Options that control parsing and validation behaviour.
+
+  <Expandable title="available options">
+    <ParamField body=":settings" type="OneLogin::RubySaml::Settings">
+      Your SP configuration object. **Required** whenever the assertion is encrypted — the SP private key is needed to decrypt it during `initialize`. For unencrypted assertions you can also assign settings later via `response.settings =`.
+    </ParamField>
+
+    <ParamField body=":matches_request_id" type="String">
+      The UUID of the `AuthnRequest` that initiated this login. When supplied, validation checks that the response's `InResponseTo` attribute matches this value. Use `session.delete(:saml_request_id)` to fetch and consume the stored ID in one step.
+    </ParamField>
+
+    <ParamField body=":allowed_clock_drift" type="Float | Integer" default="0">
+      Seconds of clock drift to tolerate when checking `NotBefore`, `NotOnOrAfter`, and `SessionNotOnOrAfter` conditions. Keep this as small as possible.
+    </ParamField>
+
+    <ParamField body=":skip_authnstatement" type="Boolean" default="false">
+      Skip validation that the assertion contains exactly one `AuthnStatement` element.
+    </ParamField>
+
+    <ParamField body=":skip_conditions" type="Boolean" default="false">
+      Skip `NotBefore` / `NotOnOrAfter` condition checks.
+    </ParamField>
+
+    <ParamField body=":skip_subject_confirmation" type="Boolean" default="false">
+      Skip `SubjectConfirmation` validation entirely.
+    </ParamField>
+
+    <ParamField body=":skip_recipient_check" type="Boolean" default="false">
+      Skip the `Recipient` check inside `SubjectConfirmationData` without skipping the rest of `SubjectConfirmation` validation.
+    </ParamField>
+
+    <ParamField body=":skip_audience" type="Boolean" default="false">
+      Skip validation that the `Audience` element matches `settings.sp_entity_id`.
+    </ParamField>
+
+    <ParamField body=":skip_destination" type="Boolean" default="false">
+      Skip validation that the `Destination` attribute matches `settings.assertion_consumer_service_url`.
+    </ParamField>
+
+    <ParamField body=":check_duplicated_attributes" type="Boolean" default="false">
+      Raise `ValidationError` if two `Attribute` elements share the same `Name`.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+---
+
+## Validation
+
+### `#is_valid?(collect_errors = false)` → Boolean
+
+Runs the full validation pipeline and returns `true` if the response passes all checks.
+
+```ruby
+response = OneLogin::RubySaml::Response.new(params[:SAMLResponse], settings: saml_settings)
+
+if response.is_valid?
+  session[:userid] = response.nameid
+else
+  logger.warn response.errors.inspect
+end
+```
+
+<ParamField body="collect_errors" type="Boolean" default="false">
+  When `false` (default), validation stops at the first failure. When `true`, all validations run and every error is collected into `#errors`.
+</ParamField>
+
+The pipeline validates, in order:
+
+1. Response is non-empty and settings are present
+2. SAML version is `2.0`
+3. Response has an `ID` attribute
+4. Status code is `urn:oasis:names:tc:SAML:2.0:status:Success`
+5. Exactly one `Assertion` or `EncryptedAssertion` element
+6. Signed elements are valid (`Response` or `Assertion`, no duplicated IDs)
+7. Schema validity against `saml-schema-protocol-2.0.xsd`
+8. No duplicated attribute names (when `:check_duplicated_attributes` is set)
+9. `InResponseTo` matches `:matches_request_id` (when provided)
+10. `Conditions` element is present and unique
+11. `NotBefore` / `NotOnOrAfter` conditions
+12. Exactly one `AuthnStatement` element
+13. `Audience` matches `sp_entity_id`
+14. `Destination` matches `assertion_consumer_service_url`
+15. `Issuer` matches `idp_entity_id`
+16. Session has not expired (`SessionNotOnOrAfter`)
+17. Valid `SubjectConfirmation`
+18. `NameID` is present (when `security[:want_name_id]` is `true`)
+19. Signature is cryptographically valid
+
+---
+
+## Instance methods
+
+### `#nameid` → String
+
+The `NameID` value from the assertion subject. This is the primary identifier of the authenticated user — typically an email address or opaque identifier depending on the configured `name_identifier_format`. Also accessible as `#name_id`.
+
+```ruby
+session[:userid] = response.nameid
+# => "alice@example.com"
+```
+
+### `#nameid_format` → String
+
+The `Format` attribute of the `NameID` element. Also accessible as `#name_id_format`.
+
+```ruby
+response.nameid_format
+# => "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"
+```
+
+### `#attributes` → OneLogin::RubySaml::Attributes
+
+All attributes from `saml:AttributeStatement`, keyed by attribute `Name`. By default, `attributes['name']` returns the **first** value (single-value compatibility mode). Call `attributes.multi('name')` to get all values as an array.
+
+```ruby
+response.attributes[:uid]
+# => "alice"  (single_value_compatibility mode)
+
+response.attributes.multi(:role)
+# => ["admin", "editor"]
+
+# Disable single-value compatibility globally:
+OneLogin::RubySaml::Attributes.single_value_compatibility = false
+response.attributes[:uid]
+# => ["alice"]
+```
+
+<Note>
+  `single_value_compatibility` is a class-level setting that affects all `Attributes` instances. The default is `true` for backwards compatibility.
+</Note>
+
+### `#assertion_id` → String
+
+The `ID` attribute of the `Assertion` element. Store this in a shared cache (Redis, Memcached) to detect and reject replay attacks.
+
+```ruby
+if response.is_valid?
+  assertion_id = response.assertion_id
+  # Store in cache with TTL = response.not_on_or_after
+end
+```
+
+### `#not_on_or_after` → Time
+
+The `NotOnOrAfter` value of the `Conditions` element, parsed as a `Time` object in UTC. Use this as the expiry when caching `assertion_id` for replay protection.
+
+```ruby
+expiry = response.not_on_or_after
+# => 2026-04-02 14:30:00 UTC
+```
+
+### `#sessionindex` → String
+
+The `SessionIndex` from `AuthnStatement`. Store this in the user's session and include it in future `LogoutRequest` messages.
+
+```ruby
+session[:saml_session_index] = response.sessionindex
+```
+
+### `#session_expires_at` → Time
+
+The `SessionNotOnOrAfter` value from `AuthnStatement`. Use this to set the local session expiry ceiling.
+
+```ruby
+session.expire_at = response.session_expires_at
+```
+
+### `#authn_context_class_ref` → String
+
+The `AuthnContextClassRef` value from `AuthnStatement`. Verify this matches the context you requested if your application requires a specific authentication level.
+
+```ruby
+response.authn_context_class_ref
+# => "urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport"
+```
+
+### `#authn_instant` → String
+
+The `AuthnInstant` attribute from `AuthnStatement` as a raw string. Useful for requiring re-authentication after a long period of inactivity.
+
+```ruby
+response.authn_instant
+# => "2026-04-02T12:00:00Z"
+```
+
+### `#errors` → Array&lt;String&gt;
+
+Human-readable validation error messages populated after calling `#is_valid?` or `#validate`.
+
+```ruby
+unless response.is_valid?(collect_errors: true)
+  response.errors.each { |e| logger.error e }
+end
+```
+
+### `#success?` → Boolean
+
+Returns `true` if the response `StatusCode` is `urn:oasis:names:tc:SAML:2.0:status:Success`. This is checked as part of `#is_valid?`.
+
+### `#status_code` → String
+
+The raw `StatusCode` value (or a `" | "`-joined string of nested codes for non-success responses).
+
+### `#status_message` → String
+
+The `StatusMessage` element text, if present. Often contains a human-readable description of an error status.
+
+### `#audiences` → Array&lt;String&gt;
+
+All `Audience` element values from `AudienceRestriction`. At least one must match `settings.sp_entity_id`.
+
+### `#in_response_to` → String | nil
+
+The `InResponseTo` attribute of the `Response` element. Compared against `:matches_request_id` during validation.
+
+### `#assertion_encrypted?` → Boolean
+
+Returns `true` if the response contains an `EncryptedAssertion` element.
+
+### `#not_before` → Time
+
+The `NotBefore` value of the `Conditions` element.
+
+### `#issuers` → Array&lt;String&gt;
+
+Text content of all `Issuer` elements (from both the `Response` and the `Assertion`). Each is compared against `settings.idp_entity_id`.
+
+---
+
+## Usage examples
+
+<CodeGroup>
+
+```ruby Basic consumption
+def consume
+  response = OneLogin::RubySaml::Response.new(
+    params[:SAMLResponse],
+    settings: saml_settings
+  )
+
+  if response.is_valid?
+    session[:userid]     = response.nameid
+    session[:attributes] = response.attributes
+  else
+    authorize_failure
+    # response.errors contains descriptive messages
+  end
+end
+```
+
+```ruby InResponseTo validation
+def init
+  request = OneLogin::RubySaml::Authrequest.new
+  session[:saml_request_id] = request.uuid
+  redirect_to request.create(saml_settings)
+end
+
+def consume
+  request_id = session.delete(:saml_request_id)
+  raise "IdP-initiated login not permitted" if request_id.nil?
+
+  response = OneLogin::RubySaml::Response.new(
+    params[:SAMLResponse],
+    settings:           saml_settings,
+    matches_request_id: request_id
+  )
+
+  if response.is_valid?
+    session[:userid] = response.nameid
+  else
+    authorize_failure
+  end
+end
+```
+
+```ruby Replay protection
+def consume
+  response = OneLogin::RubySaml::Response.new(
+    params[:SAMLResponse],
+    settings: saml_settings
+  )
+
+  if response.is_valid?
+    assertion_id = response.assertion_id
+    expiry       = response.not_on_or_after || Time.now.utc + 300
+
+    unless cache_assertion(assertion_id, expires_at: expiry)
+      return authorize_failure("Replay attack detected")
+    end
+
+    session[:userid] = response.nameid
+  else
+    authorize_failure
+  end
+end
+```
+
+```ruby Collecting all errors
+response = OneLogin::RubySaml::Response.new(
+  params[:SAMLResponse],
+  settings: saml_settings
+)
+
+valid = response.is_valid?(true)  # collect_errors: true
+
+unless valid
+  response.errors.each { |msg| Rails.logger.warn("[SAML] #{msg}") }
+end
+```
+
+</CodeGroup>
+
+<Warning>
+  If the assertion is encrypted, you **must** pass `:settings` to the constructor. ruby-saml needs the SP private key to decrypt the assertion during initialization. If you assign settings after initialization, the `EncryptedAssertion` will not be decryptable.
+</Warning>

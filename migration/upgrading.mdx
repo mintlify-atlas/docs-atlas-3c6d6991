@@ -1,0 +1,317 @@
+---
+title: "Upgrading"
+description: "Migration guide for upgrading between ruby-saml versions."
+---
+
+This guide covers breaking changes and required code updates for each ruby-saml version transition.
+
+<AccordionGroup>
+
+  <Accordion title="1.17.x → 1.18.0">
+
+    <Warning>
+      Version 1.18.0 changes signature validation order and enables malformed document
+      checking by default. If you use a fork or a customized subclass of `SignedDocument`
+      (defined in `xml_security.rb`), you may need to adapt your code.
+    </Warning>
+
+    **Signature validation order**
+
+    The toolkit now applies a new ordering to how signature validation is performed
+    during SAML message parsing.
+
+    **Malformed document checking**
+
+    The setting `settings.check_malformed_doc` is now enabled by default. The toolkit
+    will check for malformed XML when parsing any SAML message. If your integration
+    sends or receives non-conformant XML that was previously accepted, parsing will
+    now fail.
+
+    **`SignedDocument` class changes**
+
+    The `SignedDocument` class in `xml_security.rb` experienced several internal
+    changes. Standard usage through the main ruby-saml public API should not be
+    affected, but custom subclasses or direct usage of `SignedDocument` may require
+    updates.
+
+  </Accordion>
+
+  <Accordion title="1.12.x → 1.13.0">
+
+    **New binding parameters**
+
+    Version 1.13.0 introduces two new settings:
+
+    - `settings.idp_sso_service_binding`
+    - `settings.idp_slo_service_binding`
+
+    These replace `settings.security[:embed_sign]` for controlling how SAML message
+    signing is handled. `HTTP-POST` embeds the signature; `HTTP-Redirect` does not.
+
+    <Warning>
+      `settings.security[:embed_sign]` is now deprecated. Switch to the new binding
+      parameters. The old key remains functional for backward compatibility but will
+      be removed in a future version.
+    </Warning>
+
+    **`IdpMetadataParser` updates**
+
+    The `IdpMetadataParser#parse`, `#parse_to_hash`, and `#parse_to_array` methods
+    now automatically retrieve `idp_sso_service_binding` and `idp_slo_service_binding`
+    from IdP metadata.
+
+    **Symbol aliases for bindings**
+
+    For convenience, you can now use the symbol aliases `:post` and `:redirect` for
+    any `settings.*_binding` parameter instead of the full binding URI strings.
+
+  </Accordion>
+
+  <Accordion title="1.11.x → 1.12.0">
+
+    **Renamed URL settings**
+
+    <Warning>
+      `settings.idp_sso_target_url` and `settings.idp_slo_target_url` are deprecated
+      in favor of `settings.idp_sso_service_url` and `settings.idp_slo_service_url`.
+      Update all references in your settings configuration.
+    </Warning>
+
+    The `IdpMetadataParser#parse`, `#parse_to_hash`, and `#parse_to_array` methods
+    now populate `idp_sso_service_url` and `idp_slo_service_url` (previously
+    `idp_sso_target_url` and `idp_slo_target_url` respectively).
+
+    **GCM encryption support**
+
+    Version 1.12.0 adds support for AES-128-GCM, AES-192-GCM, and AES-256-GCM
+    encryption algorithms. No configuration changes are required to retain existing
+    behavior.
+
+    **More specific signature error messages**
+
+    Signature validation now produces more specific error messages to aid debugging.
+    If your code matches on error message strings, review and update those checks.
+
+  </Accordion>
+
+  <Accordion title="1.10.x → 1.11.0">
+
+    **`settings.issuer` renamed to `settings.sp_entity_id`**
+
+    <Warning>
+      `settings.issuer` is deprecated in favor of `settings.sp_entity_id`. Update
+      your settings initialization to use the new name.
+    </Warning>
+
+    **Certificate expiration checks**
+
+    Two new security settings are available (both `false` by default):
+
+    - `settings.security[:check_idp_cert_expiration]` — raises an error if the IdP
+      X.509 certificate has expired.
+    - `settings.security[:check_sp_cert_expiration]` — raises an error if the SP
+      X.509 certificate has expired.
+
+    Enable these settings to detect expired certificates during validation.
+
+    **Other notable additions in the 1.10.x series**
+
+    - **1.10.2**: The `valid_until` attribute is now included in parsed IdP metadata.
+    - **1.10.1**: Improved Ruby 1.8.7 compatibility.
+
+  </Accordion>
+
+  <Accordion title="1.9.0 → 1.10.0">
+
+    Version 1.10.0 improves `IdpMetadataParser` to allow parsing multiple
+    `IDPSSODescriptor` elements. It also adds Subject support on `AuthNRequest`,
+    allowing SPs to provide the IdP with information about the user to be
+    authenticated, and updates `format_cert` to accept certificates containing
+    `\x0d` characters.
+
+  </Accordion>
+
+  <Accordion title="1.8.0 → 1.9.0">
+
+    Version 1.9.0 better supports Ruby 2.4+ and JRuby 9.2.0.0.
+
+    **`Settings` initialization second parameter**
+
+    `Settings.new` now accepts a second parameter, `keep_security_settings`
+    (default: `false`). When set to `true`, security settings attributes that are
+    not explicitly overridden are preserved across re-initialization. This is opt-in
+    and does not affect existing code.
+
+  </Accordion>
+
+  <Accordion title="1.7.x → 1.8.0">
+
+    **Nil `RelayState` no longer appended to URLs**
+
+    <Warning>
+      Creating `AuthRequest`, `LogoutRequest`, or `LogoutResponse` objects with a
+      `nil` RelayState param will no longer produce a URL with an empty
+      `RelayState=` parameter. If your integration depends on this behavior, update
+      it accordingly.
+    </Warning>
+
+    The invalid audience error message was also changed in this version.
+
+  </Accordion>
+
+  <Accordion title="1.6.0 → 1.7.0">
+
+    <Warning>
+      Version 1.7.0 is a recommended update for all Ruby SAML users. It fixes
+      [CVE-2017-11428](https://www.cvedetails.com/cve/CVE-2017-11428/), which
+      allowed authentication bypass by processing text nodes improperly when
+      comments were present in the SAML document.
+    </Warning>
+
+    No API changes are required when upgrading to 1.7.0.
+
+  </Accordion>
+
+  <Accordion title="1.5.0 → 1.6.0">
+
+    **Preferred way to pass raw redirect parameters**
+
+    Version 1.6.0 changes how `Logoutresponse` and `SloLogoutrequest` should be
+    constructed to avoid signature validation failures against other SAML
+    implementations (notably Microsoft ADFS).
+
+    The root cause is that URI-encoding is not canonical: signatures are computed
+    over the sender's URI-encoded message, which can differ from ruby-saml's own
+    encoding. To resolve this, pass the raw (already-encoded) query parameters via
+    `options[:raw_get_params]` instead of the decoded values in
+    `options[:get_params]`.
+
+    ```ruby
+    # query_params contains decoded query parameters
+    # raw_query_params contains encoded query parameters as sent by the IdP
+    options = {
+      get_params: {
+        "Signature" => query_params["Signature"],
+      },
+      raw_get_params: {
+        "SAMLRequest" => raw_query_params["SAMLRequest"],
+        "SigAlg"      => raw_query_params["SigAlg"],
+        "RelayState"  => raw_query_params["RelayState"],
+      },
+    }
+    slo_logout_request = OneLogin::RubySaml::SloLogoutrequest.new(
+      query_params["SAMLRequest"], settings, options
+    )
+    raise "Invalid Logout Request" unless slo_logout_request.is_valid?
+    ```
+
+    <Note>
+      The old `options[:get_params]`-only form is still accepted for backward
+      compatibility, but using `options[:raw_get_params]` is preferred wherever
+      possible.
+    </Note>
+
+  </Accordion>
+
+  <Accordion title="1.4.2 → 1.4.3">
+
+    **SubjectConfirmation Recipient validation**
+
+    Version 1.4.3 introduces validation of the `Recipient` attribute on
+    `SubjectConfirmation` elements. The `Recipient` value is compared against
+    `settings.assertion_consumer_service_url`.
+
+    If you need to skip this validation, pass the `:skip_recipient_check` option
+    to the `Response` initializer.
+
+    **Multiple IdP certificates in metadata**
+
+    Parsing IdP metadata that contains more than one certificate will now populate
+    the `idp_cert_multi` property instead of `idp_cert`. Update any code that reads
+    `idp_cert` directly when more than one certificate may be present.
+
+  </Accordion>
+
+  <Accordion title="1.3.x → 1.4.x">
+
+    <Warning>
+      Version 1.4.0 is a recommended update for all Ruby SAML users due to several
+      security improvements, including stricter validation of `Conditions`,
+      `AuthnStatement`, `SPNameQualifier`, `Issuer`, and `EncryptedAssertion`.
+    </Warning>
+
+    The following validations are now enforced:
+
+    - `Conditions` element must be present and appear exactly once.
+    - `AuthnStatement` element must be present and appear exactly once.
+    - `SPNameQualifier` must match the SP EntityID.
+    - `saml:Attribute` elements with duplicate `Name` attributes are rejected.
+    - Empty `NameID` values are rejected.
+    - `Issuer` element is required and must match the IdP EntityID.
+    - `Destination` cannot be blank (if present, must match the ACS URL).
+    - `EncryptedAssertion` must contain exactly one `Assertion` element.
+
+  </Accordion>
+
+  <Accordion title="1.2.x → 1.3.x">
+
+    <Warning>
+      Version 1.3.0 is a recommended update for all Ruby SAML users. It fixes
+      [CVE-2016-5697](https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2016-5697),
+      a Signature wrapping attack vulnerability, by adding additional validations.
+    </Warning>
+
+    No API changes are required when upgrading to 1.3.0.
+
+  </Accordion>
+
+  <Accordion title="1.1.x → 1.2.x">
+
+    Version 1.2.0 adds IdP metadata parsing improvements, replaces the `uuid` gem
+    with `SecureRandom`, and refactors error handling. No compatibility issues are
+    expected.
+
+  </Accordion>
+
+  <Accordion title="1.0.x → 1.1.x">
+
+    Version 1.1.0 improves signature validation and resolves namespace conflicts.
+    No breaking API changes are expected.
+
+  </Accordion>
+
+  <Accordion title="0.9.x → 1.0.x">
+
+    <Warning>
+      Version 1.0.0 is a recommended update for all Ruby SAML users. It includes
+      security fixes including entity expansion limitation (XEE attack prevention),
+      additional SAML message validations, and decryption support.
+    </Warning>
+
+    **`get_idp_metadata` now raises on failure**
+
+    The `get_idp_metadata` method now raises a `OneLogin::RubySaml::HttpError`
+    exception when it cannot fetch the IdP metadata. Previously it failed silently.
+    Review your integration if you use this method and add appropriate error
+    handling.
+
+  </Accordion>
+
+  <Accordion title="0.8.x → 0.9.x">
+
+    Version 0.9.0 adds many new features and improvements. No breaking API changes
+    are expected.
+
+  </Accordion>
+
+  <Accordion title="0.7.x → 0.8.x">
+
+    <Warning>
+      Version 0.8.0 changes the namespace of the gem from `OneLogin::Saml` to
+      `OneLogin::RubySaml`. Update all references in your codebase to use the new
+      namespace.
+    </Warning>
+
+  </Accordion>
+
+</AccordionGroup>

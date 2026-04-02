@@ -1,0 +1,54 @@
+---
+title: "Introduction"
+description: "Ruby SAML is a toolkit for implementing SAML 2.0 service provider (SP) authentication in Ruby applications."
+---
+
+Ruby SAML gives you the tools to add SAML-based Single Sign-On (SSO) to any Ruby or Rails application. It handles the client side of SAML 2.0 — generating authentication requests, validating IdP responses, managing Single Logout, parsing IdP metadata, and securing message exchange with XML signatures and encryption.
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="gem" href="/installation">
+    Add ruby-saml to your Gemfile and get up and running in minutes
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Build a working SAML controller from scratch with real code examples
+  </Card>
+  <Card title="Authentication Flow" icon="key" href="/guides/authentication-flow">
+    Understand the SP-initiated SSO flow end to end
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/settings">
+    Explore every class, method, and configuration option
+  </Card>
+</CardGroup>
+
+## What ruby-saml does
+
+Ruby SAML implements the **service provider (SP) side** of SAML 2.0. Your application acts as the SP, and your users authenticate through an external **Identity Provider (IdP)** such as Okta, Azure AD, OneLogin, or any other SAML-compliant IdP.
+
+The library manages:
+
+- **SSO initialization** — Building and signing `AuthnRequest` messages to redirect users to the IdP
+- **Response validation** — Parsing, decrypting, and cryptographically verifying IdP `SAMLResponse` messages
+- **Single Logout (SLO)** — SP-initiated and IdP-initiated logout flows
+- **IdP metadata parsing** — Automatically loading IdP configuration from metadata XML or remote URLs
+- **SP metadata generation** — Exposing your SP configuration as a metadata XML endpoint
+- **Signing and encryption** — Signing SP requests and decrypting `EncryptedAssertion` elements
+
+## Supported Ruby versions
+
+| Runtime | Versions |
+|---------|----------|
+| Ruby (MRI) | 2.1 through 3.4 |
+| JRuby | 9.1 through 9.4 |
+| TruffleRuby | Latest stable |
+
+## Security
+
+Ruby SAML has a track record of active security maintenance. Always run the latest release. Critical CVEs are patched promptly — see the [Changelog](/migration/changelog) for details.
+
+<Warning>
+  Versions before 1.18.0 contain critical authentication bypass vulnerabilities (CVE-2025-25291, CVE-2025-25292, CVE-2025-25293). Upgrade to **1.18.1** or later immediately.
+</Warning>
+
+## License
+
+Ruby SAML is released under the [MIT License](https://github.com/SAML-Toolkits/ruby-saml/blob/master/LICENSE).

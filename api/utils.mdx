@@ -1,0 +1,308 @@
+---
+title: "Utils"
+description: "OneLogin::RubySaml::Utils — utility methods for certificate and XML handling."
+---
+
+`OneLogin::RubySaml::Utils` provides static helper methods used throughout the ruby-saml toolkit. Most methods are called internally by the other classes, but several are directly useful when working with certificates, private keys, and signed HTTP-Redirect binding query strings.
+
+All methods are class methods (called as `OneLogin::RubySaml::Utils.method_name(...)`).
+
+---
+
+## Certificate and key helpers
+
+### `Utils.format_cert`
+
+```ruby
+Utils.format_cert(cert) → String
+```
+
+Normalizes an X.509 certificate string to standard PEM format with 64-character line wrapping and `-----BEGIN CERTIFICATE-----` / `-----END CERTIFICATE-----` headers.
+
+- Strips existing headers and whitespace before re-wrapping.
+- Supports multiple concatenated certificates in a single string (returns them newline-separated).
+- Returns the input unchanged if it is `nil`, empty, or contains non-ASCII characters (already encoded).
+
+<ParamField path="cert" type="String" required>
+  A certificate string in any of: raw base64, PEM with headers, or multiple PEM blocks concatenated.
+</ParamField>
+
+```ruby
+raw = "MIIDEzCCAfugAwIBAgIJAKoK..."  # base64 without headers
+
+pem = OneLogin::RubySaml::Utils.format_cert(raw)
+# => "-----BEGIN CERTIFICATE-----\nMIIDEzCCAfugAwI...\n-----END CERTIFICATE-----"
+```
+
+---
+
+### `Utils.format_private_key`
+
+```ruby
+Utils.format_private_key(key) → String
+```
+
+Normalizes a private key string to standard PEM format with 64-character line wrapping. Automatically detects RSA keys (preserving the `RSA PRIVATE KEY` label) versus PKCS#8 keys (`PRIVATE KEY`).
+
+- Returns the input unchanged if it is `nil`, empty, or contains a carriage return (`\r`, indicating it is already encoded).
+
+<ParamField path="key" type="String" required>
+  A private key string in any of: raw base64, PEM with RSA or PKCS#8 headers.
+</ParamField>
+
+```ruby
+raw_rsa = "MIIEowIBAAKCAQEA..."
+
+pem = OneLogin::RubySaml::Utils.format_private_key(raw_rsa)
+# => "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----"
+```
+
+---
+
+### `Utils.build_cert_object`
+
+```ruby
+Utils.build_cert_object(cert) → OpenSSL::X509::Certificate | nil
+```
+
+Formats a certificate string with `format_cert` and returns an `OpenSSL::X509::Certificate` object. Returns `nil` if `cert` is `nil` or empty.
+
+---
+
+### `Utils.build_private_key_object`
+
+```ruby
+Utils.build_private_key_object(private_key) → OpenSSL::PKey::RSA | nil
+```
+
+Formats a private key string with `format_private_key` and returns an `OpenSSL::PKey::RSA` object. Returns `nil` if `private_key` is `nil` or empty.
+
+---
+
+### `Utils.is_cert_expired`
+
+```ruby
+Utils.is_cert_expired(cert) → Boolean
+```
+
+Returns `true` if the certificate's `not_after` time is in the past.
+
+<ParamField path="cert" type="OpenSSL::X509::Certificate | String" required>
+  An `OpenSSL::X509::Certificate` instance or a PEM/base64 certificate string.
+</ParamField>
+
+---
+
+### `Utils.is_cert_active`
+
+```ruby
+Utils.is_cert_active(cert) → Boolean
+```
+
+Returns `true` if the current time is within the certificate's validity period (i.e., after `not_before` and before or at `not_after`).
+
+<ParamField path="cert" type="OpenSSL::X509::Certificate | String" required>
+  An `OpenSSL::X509::Certificate` instance or a PEM/base64 certificate string.
+</ParamField>
+
+---
+
+## Query string helpers (HTTP-Redirect binding)
+
+### `Utils.build_query`
+
+```ruby
+Utils.build_query(params) → String
+```
+
+Builds the canonical query string used to generate a signature for the HTTP-Redirect binding. The string is of the form `SAMLRequest=...&RelayState=...&SigAlg=...` (or `SAMLResponse=...`).
+
+<ParamField path="params" type="Hash" required>
+  <Expandable title="params keys">
+    <ParamField path="params[:type]" type="String" required>
+      `'SAMLRequest'` or `'SAMLResponse'`.
+    </ParamField>
+
+    <ParamField path="params[:data]" type="String" required>
+      The base64-encoded (and deflated) SAML message.
+    </ParamField>
+
+    <ParamField path="params[:relay_state]" type="String">
+      The `RelayState` value. Omitted from the query string if `nil`.
+    </ParamField>
+
+    <ParamField path="params[:sig_alg]" type="String" required>
+      The signature algorithm URI, e.g. `"http://www.w3.org/2000/09/xmldsig#rsa-sha256"`.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+```ruby
+query_string = OneLogin::RubySaml::Utils.build_query(
+  type:        'SAMLRequest',
+  data:        base64_deflated_request,
+  relay_state: 'https://sp.example.com/return',
+  sig_alg:     'http://www.w3.org/2000/09/xmldsig#rsa-sha256'
+)
+# => "SAMLRequest=...&RelayState=...&SigAlg=..."
+```
+
+---
+
+### `Utils.build_query_from_raw_parts`
+
+```ruby
+Utils.build_query_from_raw_parts(params) → String
+```
+
+Reconstructs the canonical query string from raw (already URI-encoded) parameter values, exactly as received from the IdP. Used when verifying an incoming signature to avoid double-encoding.
+
+<ParamField path="params" type="Hash" required>
+  <Expandable title="params keys">
+    <ParamField path="params[:type]" type="String" required>
+      `'SAMLRequest'` or `'SAMLResponse'`.
+    </ParamField>
+
+    <ParamField path="params[:raw_data]" type="String" required>
+      URI-encoded, base64-encoded SAML message as received.
+    </ParamField>
+
+    <ParamField path="params[:raw_relay_state]" type="String">
+      URI-encoded `RelayState` as received. Omitted if `nil`.
+    </ParamField>
+
+    <ParamField path="params[:raw_sig_alg]" type="String" required>
+      URI-encoded `SigAlg` as received.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+---
+
+### `Utils.prepare_raw_get_params`
+
+```ruby
+Utils.prepare_raw_get_params(rawparams, params, lowercase_url_encoding = false) → Hash
+```
+
+Fills in any missing entries in `rawparams` by URI-encoding the corresponding values from `params`. When `lowercase_url_encoding` is `true`, percent-encoded sequences are lowercased (e.g. `%2B` → `%2b`) for ADFS compatibility.
+
+<ParamField path="rawparams" type="Hash | nil">
+  Existing raw (URI-encoded) parameters. May be `nil` or partial.
+</ParamField>
+
+<ParamField path="params" type="Hash" required>
+  Parsed (decoded) GET parameters.
+</ParamField>
+
+<ParamField path="lowercase_url_encoding" type="Boolean" default="false">
+  When `true`, percent-encoded characters are lowercased. Set this when interoperating with ADFS.
+</ParamField>
+
+---
+
+### `Utils.verify_signature`
+
+```ruby
+Utils.verify_signature(params) → Boolean
+```
+
+Verifies a signature from an HTTP-Redirect binding request against a certificate's public key.
+
+<ParamField path="params" type="Hash" required>
+  <Expandable title="params keys">
+    <ParamField path="params[:cert]" type="OpenSSL::X509::Certificate" required>
+      The IdP's public certificate.
+    </ParamField>
+
+    <ParamField path="params[:sig_alg]" type="String" required>
+      The algorithm URI from `SigAlg`.
+    </ParamField>
+
+    <ParamField path="params[:signature]" type="String" required>
+      The base64-encoded signature from the `Signature` parameter.
+    </ParamField>
+
+    <ParamField path="params[:query_string]" type="String" required>
+      The canonical query string to verify against, produced by `build_query_from_raw_parts`.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+---
+
+## XML helpers
+
+### `Utils.element_text`
+
+```ruby
+Utils.element_text(element) → String | nil
+```
+
+Returns the concatenation of all child text nodes of a `REXML::Element`. Returns `nil` if `element` is `nil`.
+
+---
+
+### `Utils.uri_match?`
+
+```ruby
+Utils.uri_match?(destination_url, settings_url) → Boolean
+```
+
+Compares two URL strings as URIs: scheme and host comparisons are case-insensitive, path and query must match exactly. Falls back to a plain string comparison if either value cannot be parsed as a URI.
+
+---
+
+## Duration and UUID helpers
+
+### `Utils.parse_duration`
+
+```ruby
+Utils.parse_duration(duration, timestamp = Time.now.utc) → Integer | nil
+```
+
+Interprets an ISO 8601 duration string (e.g., `"PT1H30M"`, `"P1Y2M3DT4H"`) relative to `timestamp` and returns the resulting Unix timestamp as an `Integer`. Returns `nil` on Ruby < 1.9.
+
+<ParamField path="duration" type="String" required>
+  An ISO 8601 duration string.
+</ParamField>
+
+<ParamField path="timestamp" type="Time" default="Time.now.utc">
+  The base time to apply the duration to.
+</ParamField>
+
+---
+
+### `Utils.uuid`
+
+```ruby
+Utils.uuid → String
+```
+
+Generates a UUID string prefixed with `_` (e.g., `"_550e8400-e29b-41d4-a716-446655440000"`). The underscore prefix ensures the value is a valid XML `ID` attribute (which must not start with a digit).
+
+```ruby
+OneLogin::RubySaml::Utils.uuid  # => "_550e8400-e29b-41d4-a716-446655440000"
+```
+
+---
+
+### `Utils.status_error_msg`
+
+```ruby
+Utils.status_error_msg(error_msg, raw_status_code = nil, status_message = nil) → String
+```
+
+Builds a human-readable error string from a SAML `StatusCode` and optional `StatusMessage`. Used internally by `Logoutresponse` and `Response` validation.
+
+---
+
+## Constants
+
+| Constant | Value |
+|---|---|
+| `Utils::BINDINGS[:post]` | `"urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"` |
+| `Utils::BINDINGS[:redirect]` | `"urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"` |
+| `Utils::DSIG` | `"http://www.w3.org/2000/09/xmldsig#"` |
+| `Utils::XENC` | `"http://www.w3.org/2001/04/xmlenc#"` |
+| `Utils::UUID_PREFIX` | `"_"` |
